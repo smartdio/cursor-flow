@@ -1,0 +1,30 @@
+{
+  "name": "@n8flow/cursor-flow",
+  "version": "1.0.0",
+  "description": "Cursor Agent 任务执行和流程控制工具",
+  "type": "commonjs",
+  "bin": {
+    "cursor-agent-task": "./cursor-agent-task.js",
+    "cursor-tasks": "./cursor-tasks.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "cursor",
+    "agent",
+    "task",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "files": [
+    "cursor-agent-task.js",
+    "cursor-tasks.js",
+    "README.md"
+  ]
+}
+
