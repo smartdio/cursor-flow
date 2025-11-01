@@ -97,10 +97,19 @@ cursor-tasks [选项]
 **选项：**
 - `-t, --task-file <path>` 任务文件路径（默认: doc/task.json）
 - `-m, --model <model>` 模型名称（默认: composer-1）
+- `--judge-model <model>` 语义判定模型（必需，或设置 CURSOR_TASKS_JUDGE_MODEL 环境变量）
 - `--retry <num>` 重试次数（默认: 3）
 - `--timeout <minutes>` 超时时间（分钟，默认: 30）
 - `--reset` 重置所有任务状态为 pending
 - `-h, --help` 显示帮助信息
+
+**环境变量：**
+- `CURSOR_TASKS_JUDGE_MODEL` 语义判定模型（如果未通过 --judge-model 提供）
+
+**环境变量文件：**
+- 如果当前执行目录下存在 `.cursor.env` 文件，程序会自动加载其中的环境变量
+- `.cursor.env` 文件格式：`KEY=value`，支持注释（以 `#` 开头）和空行
+- 已存在的环境变量不会被 `.cursor.env` 文件覆盖（优先使用系统环境变量）
 
 **示例：**
 ```bash
@@ -108,16 +117,31 @@ cursor-tasks [选项]
 cursor-tasks -h
 cursor-tasks --help
 
-# 执行任务（使用缩写参数）
+# 执行任务（指定判定模型）
+cursor-tasks -t doc/task.json -m composer-1 --judge-model gpt-4
+
+# 使用环境变量指定判定模型
+export CURSOR_TASKS_JUDGE_MODEL=gpt-4
 cursor-tasks -t doc/task.json -m composer-1
 
-# 执行任务（使用完整参数）
-cursor-tasks --task-file doc/task.json --model composer-1
+# 使用 .cursor.env 文件（推荐）
+# 在当前目录创建 .cursor.env 文件，内容：
+# CURSOR_TASKS_JUDGE_MODEL=gpt-4
+# OPENAI_API_KEY=sk-xxx
+cursor-tasks -t doc/task.json -m composer-1
 
 # 重置任务状态
 cursor-tasks -t doc/task.json --reset
 cursor-tasks --task-file doc/task.json --reset
 ```
+
+**说明：**
+- `cursor-tasks` 使用 `call-llm` 进行语义判定，判断任务是否完成
+- 首次执行使用 `cursor-agent-task`，后续继续执行使用 `cursor-agent resume` 命令
+- 语义判定结果有三种状态：
+  - `done`: 任务已完成，继续下一个任务
+  - `resume`: 需要继续执行，回复"请继续"
+  - `auto`: 包含建议，回复"按你的建议执行"
 
 ### call-llm
 
@@ -202,7 +226,11 @@ npm unlink -g @n8flow/cursor-flow
 ## 注意事项
 
 - 确保已安装 `cursor-agent` 命令并在 PATH 中
-- `cursor-tasks` 依赖于 `cursor-agent-task`，两个脚本需要在同一目录中
-- 通过 npx 使用时，文件会被临时提取，但两个脚本的相互引用仍然可以正常工作
+- `cursor-tasks` 依赖于 `cursor-agent-task` 和 `call-llm`，这些脚本需要在同一目录中
+- 通过 npx 使用时，文件会被临时提取，但脚本之间的相互引用仍然可以正常工作
 - 任务配置文件 `task.json` 必须包含 `tasks` 数组，每个任务必须包含 `name` 和 `spec_file` 字段
+- 执行任务时必须指定 `--judge-model` 参数或设置 `CURSOR_TASKS_JUDGE_MODEL` 环境变量
+- `cursor-tasks` 会使用 `call-llm` 进行语义判定，需要确保已配置 `OPENAI_API_KEY` 或通过 `--api-key` 提供
+- 支持 `.cursor.env` 文件自动加载环境变量，文件应放在执行命令的当前目录下，格式为 `KEY=value`（每行一个）
+- `.cursor.env` 文件中的环境变量不会覆盖已存在的系统环境变量（优先使用系统环境变量）
 

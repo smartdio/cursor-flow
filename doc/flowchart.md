@@ -118,27 +118,34 @@ flowchart TD
     CheckSpec -->|存在| CheckAgent["检查 cursor-agent-task 是否可用<br/>(find_agent_script)"]
     CheckAgent -->|不可用| ThrowError
     
-    CheckAgent -->|可用| InitVars[初始化变量<br/>needsContinue=true<br/>attempts=0]
-    InitVars --> LoopStart{是否继续 且 attempts < retry?}
+    CheckAgent -->|可用| InitVars[初始化变量<br/>needsContinue=true<br/>attempts=0<br/>lastSemanticsResult=null]
+    InitVars --> BuildInitialArgs["构建首次执行参数<br/>(build_agent_args)<br/>-m model<br/>-f prompts<br/>-f spec_file"]
+    BuildInitialArgs --> LoopStart{是否继续 且 attempts < retry?}
     
     LoopStart -->|是| IncAttempts[attempts++]
-    IncAttempts --> BuildArgs["构建 agent 参数<br/>(build_agent_args)<br/>-m model<br/>-f prompts<br/>-f spec_file<br/>-p 请继续"]
-    BuildArgs --> RunAgent["执行 agent 调用<br/>(run_agent_once)"]
+    IncAttempts --> CheckAttempt{attempts == 1?}
+    
+    CheckAttempt -->|是| RunAgent["首次执行: 使用 cursor-agent-task<br/>(run_agent_once)"]
+    CheckAttempt -->|否| CheckSemantics{上次判定结果 == auto?}
+    CheckSemantics -->|是| SetResumePrompt[设置 resumePrompt = "按你的建议执行"]
+    CheckSemantics -->|否| SetResumePrompt[设置 resumePrompt = "请继续"]
+    SetResumePrompt --> RunResume["后续执行: 使用 cursor-agent resume<br/>(run_cursor_agent_directly)"]
+    RunResume --> RunAgent
+    
     RunAgent --> CheckRuntime["运行时错误?<br/>(is_runtime_error)"]
     
     CheckRuntime -->|是| SetError["记录错误信息<br/>(extract_short_error_message)"]
     SetError --> BreakLoop[跳出循环]
     
-    CheckRuntime -->|否| BuildJudgePrompt["构建语义判定提示<br/>(build_semantic_prompt)"]
-    BuildJudgePrompt --> ExtractCriteria["提取验收标准<br/>(extract_acceptance_criteria)"]
-    ExtractCriteria --> CallJudge["调用 agent 进行语义判定<br/>(interpret_semantics_via_agent)"]
-    CallJudge --> ParseResult[解析判定结果]
-    ParseResult --> CheckNeedsContinue{需要继续?}
+    CheckRuntime -->|否| CallLLM["调用 call-llm 进行语义判定<br/>(interpret_semantics_via_llm)"]
+    CallLLM --> ParseResult[解析 JSON 结果<br/>(parse_llm_result)<br/>result: done/resume/auto]
+    ParseResult --> SaveSemantics[保存判定结果到 lastSemanticsResult]
+    SaveSemantics --> CheckResult{判定结果}
     
-    CheckNeedsContinue -->|否| SetSuccess[标记为成功]
+    CheckResult -->|done| SetSuccess[标记为成功<br/>needsContinue=false]
     SetSuccess --> BreakLoop
     
-    CheckNeedsContinue -->|是| LogContinue[记录继续原因]
+    CheckResult -->|resume/auto| LogContinue[记录继续原因]
     LogContinue --> RecordExecution[记录本次执行]
     RecordExecution --> LoopStart
     
@@ -198,40 +205,76 @@ flowchart TD
     style RejectTimeout fill:#FF6B6B
 ```
 
-## 语义判定流程
+## 语义判定流程（使用 call-llm）
 
 ```mermaid
 flowchart TD
-    Start([开始语义判定]) --> BuildArgs["构建 agent 参数<br/>(build_agent_args)<br/>-m model<br/>-f prompts"]
-    BuildArgs --> AddJudgePrompt[添加判定提示]
-    AddJudgePrompt --> CallAgent["调用 agent 执行判定<br/>(run_agent_once)"]
-    CallAgent --> CheckError{调用失败?}
+    Start([开始语义判定]) --> BuildPrompt["构建判定提示词<br/>(build_semantic_prompt)<br/>返回固定提示词"]
+    BuildPrompt --> BuildArgs["构建 call-llm 参数<br/>-m judgeModel<br/>-f json<br/>-c executionSummary<br/>-p judgePrompt"]
+    BuildArgs --> FindScript["查找 call-llm 脚本<br/>(find_call_llm_script)"]
+    FindScript --> CallLLM["调用 call-llm<br/>(run_call_llm_once)"]
+    CallLLM --> CheckError{调用失败?<br/>exitCode != 0 或 stderr}
     
-    CheckError -->|是| ReturnContinue["返回: 需要继续<br/>(默认行为)"]
-    ReturnContinue --> End([结束])
+    CheckError -->|是| ReturnResume["返回: resume<br/>(默认行为)"]
+    ReturnResume --> End([结束])
     
-    CheckError -->|否| ParseResponse[解析 agent 回复]
-    ParseResponse --> CheckContinueIndicators{包含继续指示词?<br/>需要继续/尚未完成/未满足等}
-    ParseResponse --> CheckCompleteIndicators{包含完成指示词?<br/>已完成/满足要求/测试通过等}
+    CheckError -->|否| ParseJSON["解析 JSON 结果<br/>(parse_llm_result)"]
+    ParseJSON --> CheckResult{result 值}
     
-    CheckContinueIndicators -->|是| CheckCompleteIndicators
-    CheckCompleteIndicators -->|是| ReturnComplete["返回: 已完成<br/>(SemanticsResult)"]
-    CheckCompleteIndicators -->|否| ReturnNeedsContinue["返回: 需要继续<br/>(SemanticsResult)"]
+    CheckResult -->|done| ReturnDone["返回: done<br/>(SemanticsResult)"]
+    CheckResult -->|resume| ReturnResumeResult["返回: resume<br/>(SemanticsResult)"]
+    CheckResult -->|auto| ReturnAuto["返回: auto<br/>(SemanticsResult)"]
+    CheckResult -->|无效值| ReturnResume
     
-    CheckContinueIndicators -->|否| ReturnComplete
+    ReturnDone --> End
+    ReturnResumeResult --> End
+    ReturnAuto --> End
     
-    ReturnComplete --> End
-    ReturnNeedsContinue --> End
-    
-    CallAgent -.->|异常| CatchError[捕获异常]
+    CallLLM -.->|异常| CatchError[捕获异常]
     CatchError --> LogError["记录错误日志<br/>(logError)"]
-    LogError --> ReturnContinue
+    LogError --> ReturnResume
     
     style Start fill:#90EE90
     style End fill:#87CEEB
-    style ReturnComplete fill:#90EE90
-    style ReturnNeedsContinue fill:#FFA500
-    style ReturnContinue fill:#FF6B6B
+    style ReturnDone fill:#90EE90
+    style ReturnResumeResult fill:#FFA500
+    style ReturnAuto fill:#FFD700
+    style ReturnResume fill:#FF6B6B
+```
+
+## Resume 模式执行流程
+
+```mermaid
+flowchart TD
+    Start([开始 Resume 模式]) --> FindCommand["查找 cursor-agent 命令<br/>(find_cursor_agent_command)"]
+    FindCommand --> BuildArgs["构建命令参数<br/>cursor-agent resume<br/>--model model<br/>--print<br/>--output-format stream-json<br/>--force<br/>prompt"]
+    BuildArgs --> SpawnProcess["spawn 子进程<br/>(spawn)"]
+    SpawnProcess --> SetupStreams[设置 stdout/stderr 流处理]
+    SetupStreams --> SetupTimeout[设置超时定时器]
+    SetupTimeout --> CollectOutput[收集输出内容]
+    
+    CollectOutput --> WaitClose{进程关闭?}
+    WaitClose -->|否| CheckTimeout{超时?}
+    CheckTimeout -->|是| KillProcess[终止进程]
+    KillProcess --> RejectTimeout[拒绝: 超时]
+    RejectTimeout --> ErrorEnd([结束: 错误])
+    
+    CheckTimeout -->|否| WaitClose
+    
+    WaitClose -->|是| ClearTimeout[清除超时定时器]
+    ClearTimeout --> CalculateDuration[计算执行时长]
+    CalculateDuration --> ReturnResult["返回结果对象<br/>(AgentRunResult)<br/>exitCode, stdout, stderr, durationMs"]
+    ReturnResult --> End([结束])
+    
+    SpawnProcess -.->|异常| CatchError[捕获异常]
+    CatchError --> RejectError[拒绝: 执行异常]
+    RejectError --> ErrorEnd
+    
+    style Start fill:#90EE90
+    style End fill:#87CEEB
+    style RejectTimeout fill:#FF6B6B
+    style ErrorEnd fill:#FF6B6B
+    style RejectError fill:#FF6B6B
 ```
 
 ## 报告生成流程
@@ -308,8 +351,9 @@ flowchart TB
     subgraph 执行流程
         RunAllTasks["执行所有任务<br/>(run_all_tasks)"]
         ExecuteTask["执行单个任务<br/>(execute_task)"]
-        RunAgent["执行 Agent 调用<br/>(run_agent_once)"]
-        SemanticJudge["语义判定<br/>(interpret_semantics_via_agent)"]
+        RunAgent["首次执行: cursor-agent-task<br/>(run_agent_once)"]
+        RunResume["后续执行: cursor-agent resume<br/>(run_cursor_agent_directly)"]
+        SemanticJudge["语义判定<br/>(interpret_semantics_via_llm)<br/>使用 call-llm"]
         GenerateReport["生成报告<br/>(write_task_report)"]
     end
     
@@ -328,10 +372,12 @@ flowchart TB
     PrintHelp --> End1
     
     RunAllTasks --> ExecuteTask
-    ExecuteTask --> RunAgent
+    ExecuteTask -->|首次执行| RunAgent
+    ExecuteTask -->|后续执行| RunResume
     RunAgent --> SemanticJudge
-    SemanticJudge -->|需要继续| ExecuteTask
-    SemanticJudge -->|已完成| GenerateReport
+    RunResume --> SemanticJudge
+    SemanticJudge -->|done| GenerateReport
+    SemanticJudge -->|resume/auto| ExecuteTask
     GenerateReport --> End2([结束])
     
     ParseArgs -.->|错误| ErrorHandler
