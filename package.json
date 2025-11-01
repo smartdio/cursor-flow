@@ -5,7 +5,8 @@
   "type": "commonjs",
   "bin": {
     "cursor-agent-task": "./cursor-agent-task.js",
-    "cursor-tasks": "./cursor-tasks.js"
+    "cursor-tasks": "./cursor-tasks.js",
+    "call-llm": "./call-llm.js"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -24,6 +25,7 @@
   "files": [
     "cursor-agent-task.js",
     "cursor-tasks.js",
+    "call-llm.js",
     "README.md"
   ]
 }

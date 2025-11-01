@@ -14,6 +14,9 @@ npx @n8flow/cursor-flow cursor-agent-task -h
 
 # 使用 cursor-tasks 命令
 npx @n8flow/cursor-flow cursor-tasks --help
+
+# 使用 call-llm 命令
+npx @n8flow/cursor-flow call-llm --help
 ```
 
 或者本地开发时，从当前目录使用：
@@ -22,6 +25,7 @@ npx @n8flow/cursor-flow cursor-tasks --help
 # 在 cursor-flow 目录下
 npx . cursor-agent-task -h
 npx . cursor-tasks --help
+npx . call-llm --help
 ```
 
 ### 方式二：全局安装
@@ -32,6 +36,7 @@ npm install -g @n8flow/cursor-flow
 # 然后可以直接使用命令
 cursor-agent-task -h
 cursor-tasks --help
+call-llm --help
 ```
 
 ### 方式三：本地安装到项目
@@ -43,6 +48,7 @@ npm install @n8flow/cursor-flow
 # 或通过 npx 调用
 npx cursor-agent-task -h
 npx cursor-tasks --help
+npx call-llm --help
 ```
 
 ## 命令说明
@@ -113,6 +119,60 @@ cursor-tasks -t doc/task.json --reset
 cursor-tasks --task-file doc/task.json --reset
 ```
 
+### call-llm
+
+调用兼容 OpenAI API 的 LLM 模型工具。
+
+**用法：**
+```bash
+call-llm [选项]
+```
+
+**选项：**
+- `-p, --prompt <text>` 系统提示词（可选）
+- `-c, --content <text>` 用户内容（必需）
+- `-f, --format <json|text>` 返回格式（默认: text）
+  - `json`: 提取并格式化 `message.content` 中的 JSON 内容（支持 markdown 代码块格式）
+  - `text`: 直接输出 `message.content` 的原始文本
+- `-m, --model <model>` 模型名称（必需）
+- `-k, --api-key <key>` API Key（或使用环境变量 OPENAI_API_KEY）
+- `-b, --baseurl <url>` API 基础 URL（或使用环境变量 OPENAI_API_BASE，默认: https://api.openai.com/v1）
+- `-h, --help` 显示帮助信息
+
+**环境变量：**
+- `OPENAI_API_KEY` API Key（如果未通过 --api-key 提供）
+- `OPENAI_API_BASE` API 基础 URL（如果未通过 --baseurl 提供）
+
+**示例：**
+```bash
+# 显示帮助信息
+call-llm --help
+call-llm -h
+
+# 基本调用（使用短选项）
+call-llm -m gpt-4 -c "请解释什么是 RESTful API"
+
+# 基本调用（使用完整选项）
+call-llm --model gpt-4 --content "请解释什么是 RESTful API"
+
+# 使用系统提示词
+call-llm -m gpt-4 -p "你是一个专业的代码审查助手" -c "请审查这段代码"
+call-llm --model gpt-4 --prompt "你是一个专业的代码审查助手" --content "请审查这段代码"
+
+# 返回 JSON 格式
+call-llm -m gpt-3.5-turbo -c "什么是 AI" -f json
+call-llm --model gpt-3.5-turbo --content "什么是 AI" --format json
+
+# 使用自定义 API 端点
+call-llm -b http://localhost:8080/v1 -k sk-xxx -m local-model -c "Hello"
+call-llm --baseurl http://localhost:8080/v1 --api-key sk-xxx --model local-model --content "Hello"
+
+# 使用环境变量
+export OPENAI_API_KEY="sk-xxx"
+call-llm -m gpt-4 -c "Hello"
+call-llm --model gpt-4 --content "Hello"
+```
+
 ## 开发
 
 ### 本地链接（用于开发测试）
@@ -124,6 +184,7 @@ npm link
 # 现在可以在任何地方使用命令
 cursor-agent-task -h
 cursor-tasks --help
+call-llm --help
 ```
 
 ### 卸载本地链接
