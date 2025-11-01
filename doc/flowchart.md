@@ -118,7 +118,7 @@ flowchart TD
     CheckSpec -->|存在| CheckAgent["检查 cursor-agent-task 是否可用<br/>(find_agent_script)"]
     CheckAgent -->|不可用| ThrowError
     
-    CheckAgent -->|可用| InitVars[初始化变量<br/>needsContinue=true<br/>attempts=0<br/>lastSemanticsResult=null]
+    CheckAgent -->|可用| InitVars["初始化变量<br/>needsContinue=true<br/>attempts=0<br/>lastSemanticsResult=null"]
     InitVars --> BuildInitialArgs["构建首次执行参数<br/>(build_agent_args)<br/>-m model<br/>-f prompts<br/>-f spec_file"]
     BuildInitialArgs --> LoopStart{是否继续 且 attempts < retry?}
     
@@ -127,9 +127,10 @@ flowchart TD
     
     CheckAttempt -->|是| RunAgent["首次执行: 使用 cursor-agent-task<br/>(run_agent_once)"]
     CheckAttempt -->|否| CheckSemantics{上次判定结果 == auto?}
-    CheckSemantics -->|是| SetResumePrompt[设置 resumePrompt = "按你的建议执行"]
-    CheckSemantics -->|否| SetResumePrompt[设置 resumePrompt = "请继续"]
+    CheckSemantics -->|是| SetResumePrompt["设置 resumePrompt = 按你的建议执行"]
+    CheckSemantics -->|否| SetResumePrompt2["设置 resumePrompt = 请继续"]
     SetResumePrompt --> RunResume["后续执行: 使用 cursor-agent resume<br/>(run_cursor_agent_directly)"]
+    SetResumePrompt2 --> RunResume
     RunResume --> RunAgent
     
     RunAgent --> CheckRuntime["运行时错误?<br/>(is_runtime_error)"]
@@ -138,18 +139,18 @@ flowchart TD
     SetError --> BreakLoop[跳出循环]
     
     CheckRuntime -->|否| CallLLM["调用 call-llm 进行语义判定<br/>(interpret_semantics_via_llm)"]
-    CallLLM --> ParseResult[解析 JSON 结果<br/>(parse_llm_result)<br/>result: done/resume/auto]
+    CallLLM --> ParseResult["解析 JSON 结果<br/>(parse_llm_result)<br/>result: done/resume/auto"]
     ParseResult --> SaveSemantics[保存判定结果到 lastSemanticsResult]
     SaveSemantics --> CheckResult{判定结果}
     
-    CheckResult -->|done| SetSuccess[标记为成功<br/>needsContinue=false]
+    CheckResult -->|done| SetSuccess["标记为成功<br/>needsContinue=false"]
     SetSuccess --> BreakLoop
     
     CheckResult -->|resume/auto| LogContinue[记录继续原因]
     LogContinue --> RecordExecution[记录本次执行]
     RecordExecution --> LoopStart
     
-    BreakLoop --> CheckMaxRetry{attempts >= retry<br/>且 needsContinue?}
+    BreakLoop --> CheckMaxRetry{"attempts >= retry<br/>且 needsContinue?"}
     CheckMaxRetry -->|是| SetPartial[标记为部分完成]
     CheckMaxRetry -->|否| SetFinalStatus[设置最终状态]
     SetPartial --> SetFinalStatus
@@ -213,7 +214,7 @@ flowchart TD
     BuildPrompt --> BuildArgs["构建 call-llm 参数<br/>-m judgeModel<br/>-f json<br/>-c executionSummary<br/>-p judgePrompt"]
     BuildArgs --> FindScript["查找 call-llm 脚本<br/>(find_call_llm_script)"]
     FindScript --> CallLLM["调用 call-llm<br/>(run_call_llm_once)"]
-    CallLLM --> CheckError{调用失败?<br/>exitCode != 0 或 stderr}
+    CallLLM --> CheckError{"调用失败?<br/>exitCode != 0 或 stderr"}
     
     CheckError -->|是| ReturnResume["返回: resume<br/>(默认行为)"]
     ReturnResume --> End([结束])
@@ -283,7 +284,7 @@ flowchart TD
 flowchart TD
     Start([开始生成报告]) --> GenTimestamp[生成时间戳]
     GenTimestamp --> GenFilename["生成文件名<br/>(taskName_timestamp.md)"]
-    GenFilename --> FormatSpecFile[格式化 spec_file 显示<br/>支持单个或数组]
+    GenFilename --> FormatSpecFile["格式化 spec_file 显示<br/>支持单个或数组"]
     FormatSpecFile --> BuildContent[构建报告内容]
     
     BuildContent --> AddBasicInfo["添加基本信息<br/>(任务名称/描述/规格文件/模型等)"]
