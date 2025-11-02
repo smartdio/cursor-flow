@@ -168,12 +168,12 @@ function printStep(stepNum, totalSteps, message) {
 // ============================================================================
 
 /**
- * 加载 .cursor.env 文件中的环境变量
+ * 加载 .flow/.env 文件中的环境变量
  * @param {string} [cwd] - 工作目录（默认: process.cwd()）
  * @returns {Promise<void>}
  */
 async function load_cursor_env(cwd = process.cwd()) {
-  const envFilePath = path.join(cwd, ".cursor.env");
+  const envFilePath = path.join(cwd, ".flow", ".env");
   
   try {
     // 检查文件是否存在
@@ -212,7 +212,7 @@ async function load_cursor_env(cwd = process.cwd()) {
         // 如果环境变量已存在，不覆盖（保留已设置的值）
         if (process.env[key] === undefined) {
           process.env[key] = value;
-          logInfo(`从 .cursor.env 加载环境变量: ${colorize(key, "cyan")}`);
+          logInfo(`从 .flow/.env 加载环境变量: ${colorize(key, "cyan")}`);
         } else {
           logInfo(`跳过已存在的环境变量: ${colorize(key, "dim")}`);
         }
@@ -220,7 +220,7 @@ async function load_cursor_env(cwd = process.cwd()) {
     }
   } catch (err) {
     // 加载失败时记录警告，但不中断程序执行
-    logWarning(`加载 .cursor.env 文件失败: ${err.message}`);
+    logWarning(`加载 .flow/.env 文件失败: ${err.message}`);
   }
 }
 
@@ -232,6 +232,7 @@ function print_help() {
   cursor-tasks [选项]
 
 选项:
+  init                      初始化 .flow 目录（创建 .env.example 和 task.json）
   -t, --task-file <path>    任务文件路径（默认: .flow/task.json）
   -m, --model <model>       模型名称（默认: composer-1）
   --judge-model <model>     语义判定模型（必需，或设置 CURSOR_TASKS_JUDGE_MODEL 环境变量）
@@ -242,8 +243,12 @@ function print_help() {
 
 环境变量:
   CURSOR_TASKS_JUDGE_MODEL  语义判定模型（如果未通过 --judge-model 提供）
+                            从 .flow/.env 文件加载（如果存在）
 
 示例:
+  # 初始化 .flow 目录
+  cursor-tasks init
+
   # 执行任务（指定判定模型）
   cursor-tasks -t .flow/task.json -m composer-1 --judge-model gpt-4
 
@@ -275,12 +280,15 @@ function parse_args(argv) {
     timeoutMinutes: 30,
     reportDir: ".flow/tasks/report",
     reset: false, // 是否重置任务状态
+    init: false, // 是否初始化 .flow 目录
     help: false, // 是否显示帮助
   };
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if ((arg === "-t" || arg === "--task-file") && i + 1 < argv.length) {
+    if (arg === "init") {
+      config.init = true;
+    } else if ((arg === "-t" || arg === "--task-file") && i + 1 < argv.length) {
       config.taskFile = argv[++i];
     } else if ((arg === "-m" || arg === "--model") && i + 1 < argv.length) {
       config.model = argv[++i];
@@ -297,8 +305,8 @@ function parse_args(argv) {
     }
   }
 
-  // 如果执行任务（非 reset 和 help），验证判定模型是否已指定
-  if (!config.reset && !config.help && !config.judgeModel) {
+  // 如果执行任务（非 reset、init 和 help），验证判定模型是否已指定
+  if (!config.reset && !config.init && !config.help && !config.judgeModel) {
     throw new Error("判定模型未指定。请使用 --judge-model 参数或设置 CURSOR_TASKS_JUDGE_MODEL 环境变量");
   }
 
@@ -804,7 +812,89 @@ async function save_task_file(taskFilePath, config) {
 }
 
 // ============================================================================
-// 7. 任务重置功能
+// 7. 初始化功能
+// ============================================================================
+
+/**
+ * 初始化 .flow 目录
+ * 创建 .flow/.env.example 和 .flow/task.json 文件
+ * @param {string} [cwd] - 工作目录（默认: process.cwd()）
+ * @returns {Promise<void>}
+ */
+async function init_flow_directory(cwd = process.cwd()) {
+  printHeader("初始化 .flow 目录", icons.gear);
+
+  const flowDir = path.join(cwd, ".flow");
+  const envExamplePath = path.join(flowDir, ".env.example");
+  const taskJsonPath = path.join(flowDir, "task.json");
+  const taskJsonExamplePath = path.join(cwd, "doc", "task.json.example");
+
+  // 创建 .flow 目录（如果不存在）
+  try {
+    await fsp.mkdir(flowDir, { recursive: true });
+    logSuccess(`目录已创建: ${colorize(".flow", "cyan")}`);
+  } catch (err) {
+    if (err.code !== "EEXIST") {
+      throw new Error(`创建 .flow 目录失败: ${err.message}`);
+    }
+    logInfo(`目录已存在: ${colorize(".flow", "dim")}`);
+  }
+
+  // 创建 .env.example 文件（如果不存在）
+  if (!fs.existsSync(envExamplePath)) {
+    const envExampleContent = `# Cursor Tasks 环境变量配置示例
+# 复制此文件为 .env 并填入实际值
+
+# 语义判定模型（必需）
+# 用于判定任务是否完成，例如: gpt-4, gpt-4-turbo-preview, claude-3-opus-20240229
+CURSOR_TASKS_JUDGE_MODEL=
+`;
+    await fsp.writeFile(envExamplePath, envExampleContent, "utf8");
+    logSuccess(`文件已创建: ${colorize(".flow/.env.example", "cyan")}`);
+  } else {
+    logInfo(`文件已存在，跳过: ${colorize(".flow/.env.example", "dim")}`);
+  }
+
+  // 创建 task.json 文件（如果不存在）
+  if (!fs.existsSync(taskJsonPath)) {
+    let taskJsonContent;
+    
+    // 如果存在示例文件，使用示例文件内容
+    if (fs.existsSync(taskJsonExamplePath)) {
+      taskJsonContent = await fsp.readFile(taskJsonExamplePath, "utf8");
+      logInfo(`使用示例文件: ${colorize("doc/task.json.example", "cyan")}`);
+    } else {
+      // 否则创建默认的 task.json
+      taskJsonContent = JSON.stringify({
+        prompts: [],
+        tasks: [
+          {
+            name: "示例任务",
+            description: "这是一个示例任务",
+            prompt: "请完成这个示例任务",
+            status: "pending"
+          }
+        ]
+      }, null, 2) + "\n";
+    }
+    
+    await fsp.writeFile(taskJsonPath, taskJsonContent, "utf8");
+    logSuccess(`文件已创建: ${colorize(".flow/task.json", "cyan")}`);
+  } else {
+    logInfo(`文件已存在，跳过: ${colorize(".flow/task.json", "dim")}`);
+  }
+
+  console.error("");
+  printSeparator();
+  logSuccess(`初始化完成！`);
+  logInfo(`下一步:`);
+  logInfo(`  1. 复制 ${colorize(".flow/.env.example", "cyan")} 为 ${colorize(".flow/.env", "cyan")} 并填入实际值`);
+  logInfo(`  2. 编辑 ${colorize(".flow/task.json", "cyan")} 配置你的任务`);
+  printSeparator();
+}
+
+// ============================================================================
+// 8. 任务重置功能
 // ============================================================================
 
 /**
@@ -1146,9 +1236,6 @@ async function run_all_tasks(globalConfig) {
 
 async function main() {
   try {
-    // 首先加载 .cursor.env 文件中的环境变量
-    await load_cursor_env();
-
     const config = parse_args(process.argv.slice(2));
 
     // 如果指定了帮助选项,显示帮助并退出
@@ -1156,6 +1243,15 @@ async function main() {
       print_help();
       process.exit(0);
     }
+
+    // 如果指定了 init 参数,执行初始化操作
+    if (config.init) {
+      await init_flow_directory();
+      process.exit(0);
+    }
+
+    // 加载 .flow/.env 文件中的环境变量（在执行任务前）
+    await load_cursor_env();
 
     // 如果指定了 --reset 参数,执行重置操作
     if (config.reset) {
@@ -1190,6 +1286,7 @@ module.exports = {
   write_task_report,
   update_task_status,
   save_task_file,
+  init_flow_directory,
   reset_tasks,
   execute_task,
   run_all_tasks,
