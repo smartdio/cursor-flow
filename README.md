@@ -64,9 +64,12 @@ cursor-agent-task [-s "系统提示词"] [-p "提示词" | -f 提示词文件(�
 
 **参数：**
 - `-s, --system` 系统提示词（可选）
-- `-p, --prompt` 普通提示词（与 -f 二选一）
-- `-f, --file` 从文件读取提示词（可多次；与 -p 二选一；传 - 表示从 stdin 读取）
+- `-p, --prompt` 普通提示词（可选，可与 -f 同时使用）
+- `-f, --file` 从文件读取提示词（可多次；可与 -p 同时使用；传 - 表示从 stdin 读取）
 - `-m, --model` 指定 cursor-agent 模型名称（默认: auto）
+- `--judge-model <model>` 语义判定模型（必需，用于判断任务是否完成）
+- `--retry <num>` 最大重试次数（默认: 3）
+- `--timeout <minutes>` 每次执行的超时时间，分钟（默认: 60）
 - `-h, --help` 显示帮助
 
 **示例：**
@@ -76,13 +79,13 @@ cursor-agent-task -h
 cursor-agent-task --help
 
 # 使用提示词文件
-cursor-agent-task -f prompt.txt -f spec.md
+cursor-agent-task -f .flow/prompts/system-prompt.md -f .flow/spec/task.md --judge-model gpt-4
 
 # 使用直接提示词
-cursor-agent-task -p "请帮我实现一个功能"
+cursor-agent-task -p "请帮我实现一个功能" --judge-model gpt-4
 
-# 使用系统提示词和提示词文件
-cursor-agent-task -s "你是一个专业的开发者" -f task.md
+# 使用系统提示词和规格文件
+cursor-agent-task -s "你是一个专业的开发者" -f .flow/spec/task.md --judge-model gpt-4
 ```
 
 ### cursor-tasks
@@ -95,7 +98,7 @@ cursor-tasks [选项]
 ```
 
 **选项：**
-- `-t, --task-file <path>` 任务文件路径（默认: doc/task.json）
+- `-t, --task-file <path>` 任务文件路径（默认: .flow/task.json）
 - `-m, --model <model>` 模型名称（默认: composer-1）
 - `--judge-model <model>` 语义判定模型（必需，或设置 CURSOR_TASKS_JUDGE_MODEL 环境变量）
 - `--retry <num>` 重试次数（默认: 3）
@@ -118,21 +121,21 @@ cursor-tasks -h
 cursor-tasks --help
 
 # 执行任务（指定判定模型）
-cursor-tasks -t doc/task.json -m composer-1 --judge-model gpt-4
+cursor-tasks -t .flow/task.json -m composer-1 --judge-model gpt-4
 
 # 使用环境变量指定判定模型
 export CURSOR_TASKS_JUDGE_MODEL=gpt-4
-cursor-tasks -t doc/task.json -m composer-1
+cursor-tasks -t .flow/task.json -m composer-1
 
 # 使用 .cursor.env 文件（推荐）
 # 在当前目录创建 .cursor.env 文件，内容：
 # CURSOR_TASKS_JUDGE_MODEL=gpt-4
 # OPENAI_API_KEY=sk-xxx
-cursor-tasks -t doc/task.json -m composer-1
+cursor-tasks -t .flow/task.json -m composer-1
 
 # 重置任务状态
-cursor-tasks -t doc/task.json --reset
-cursor-tasks --task-file doc/task.json --reset
+cursor-tasks -t .flow/task.json --reset
+cursor-tasks --task-file .flow/task.json --reset
 ```
 
 **说明：**
@@ -219,9 +222,9 @@ npm unlink -g @n8flow/cursor-flow
 
 ## task.json 配置文件
 
-`cursor-tasks` 命令使用 `task.json` 文件来定义要执行的任务列表。示例文件位于 `doc/task.json.example`。
+`cursor-tasks` 命令使用 `task.json` 文件来定义要执行的任务列表。示例文件位于 `.flow/task.json.example`。
 
-详细的格式说明请参考 [doc/README.md](doc/README.md)。
+详细的格式说明请参考 [.flow/README.md](.flow/README.md)。
 
 ## 注意事项
 

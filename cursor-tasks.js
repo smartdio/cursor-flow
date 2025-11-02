@@ -232,7 +232,7 @@ function print_help() {
   cursor-tasks [选项]
 
 选项:
-  -t, --task-file <path>    任务文件路径（默认: doc/task.json）
+  -t, --task-file <path>    任务文件路径（默认: .flow/task.json）
   -m, --model <model>       模型名称（默认: composer-1）
   --judge-model <model>     语义判定模型（必需，或设置 CURSOR_TASKS_JUDGE_MODEL 环境变量）
   --retry <num>             重试次数（默认: 3）
@@ -245,14 +245,14 @@ function print_help() {
 
 示例:
   # 执行任务（指定判定模型）
-  cursor-tasks -t doc/task.json -m composer-1 --judge-model gpt-4
+  cursor-tasks -t .flow/task.json -m composer-1 --judge-model gpt-4
 
   # 使用环境变量指定判定模型
   export CURSOR_TASKS_JUDGE_MODEL=gpt-4
-  cursor-tasks -t doc/task.json -m composer-1
+  cursor-tasks -t .flow/task.json -m composer-1
 
   # 重置任务状态
-  cursor-tasks --task-file doc/task.json --reset
+  cursor-tasks --task-file .flow/task.json --reset
 
   # 显示帮助
   cursor-tasks --help
@@ -268,12 +268,12 @@ function print_help() {
  */
 function parse_args(argv) {
   const config = {
-    taskFile: "doc/task.json",
+    taskFile: ".flow/task.json",
     model: "composer-1",
     judgeModel: process.env.CURSOR_TASKS_JUDGE_MODEL || null, // 判定模型
     retry: 3,
     timeoutMinutes: 30,
-    reportDir: "doc/tasks/report",
+    reportDir: ".flow/tasks/report",
     reset: false, // 是否重置任务状态
     help: false, // 是否显示帮助
   };
@@ -435,8 +435,17 @@ function find_agent_script() {
  * @param {string} [taskPrompt] - 任务的 prompt 属性（可选）
  * @returns {string[]} 参数数组
  */
-function build_agent_args(model, prompts, specFiles, taskPrompt) {
+function build_agent_args(model, prompts, specFiles, taskPrompt, judgeModel, retry, timeoutMinutes) {
   const args = ["-m", model];
+
+  // 添加语义判定模型（必需）
+  args.push("--judge-model", judgeModel);
+
+  // 添加重试次数
+  args.push("--retry", retry.toString());
+
+  // 添加超时时间
+  args.push("--timeout", timeoutMinutes.toString());
 
   // 先添加 prompts 文件(作为最优先的 -f 参数)
   if (prompts && prompts.length > 0) {
@@ -644,321 +653,8 @@ function is_runtime_error(exitCode, stderr) {
   return errorPatterns.some((pattern) => pattern.test(stderr));
 }
 
-/**
- * 查找 cursor-agent 命令路径
- * @returns {string} 命令名（默认: "cursor-agent"）
- */
-function find_cursor_agent_command() {
-  // 检查命令是否存在
-  try {
-    const { spawnSync } = require("child_process");
-    const result = spawnSync("cursor-agent", ["--version"], {
-      encoding: "utf8",
-      timeout: 2000,
-    });
-    if (!result.error) {
-      return "cursor-agent";
-    }
-  } catch (e) {
-    // 忽略错误
-  }
-  
-  // 如果命令不存在，抛出错误
-  throw new Error("cursor-agent 命令未找到，请确认已安装并在 PATH 中");
-}
-
-/**
- * 直接调用 cursor-agent（用于 resume 模式）
- * @param {string} model - 模型名称
- * @param {string} prompt - 提示词
- * @param {number} timeoutMinutes - 超时时间(分钟)
- * @returns {Promise<Object>} AgentRunResult
- */
-function run_cursor_agent_directly(model, prompt, timeoutMinutes) {
-  return new Promise((resolve, reject) => {
-    const startTime = Date.now();
-    const command = find_cursor_agent_command();
-
-    // 构建命令参数: cursor-agent resume --model <model> --print --output-format stream-json --force <prompt>
-    const args = [
-      "resume",                    // resume 命令
-      "--model", model,
-      "--print",
-      "--output-format", "stream-json",
-      "--force",
-      prompt,                      // 提示词作为位置参数
-    ];
-
-    logInfo(`直接调用 cursor-agent: ${colorize(`cursor-agent ${args.join(" ")}`, "bright")}`);
-    console.error(""); // 空行分隔
-
-    const child = spawn(command, args, {
-      cwd: process.cwd(),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let stdout = "";
-    let stderr = "";
-    let isClosed = false;
-
-    // 安全写入函数，检查流是否可写
-    const safeWrite = (stream, text) => {
-      if (!isClosed && stream && !stream.destroyed && stream.writable) {
-        try {
-          stream.write(text);
-        } catch (err) {
-          // 忽略写入错误（流可能已关闭）
-        }
-      }
-    };
-
-    // 实时输出到控制台，同时收集内容
-    child.stdout.on("data", (data) => {
-      const text = data.toString();
-      stdout += text;
-      // 实时输出到控制台
-      safeWrite(process.stdout, text);
-    });
-
-    child.stderr.on("data", (data) => {
-      const text = data.toString();
-      stderr += text;
-      // 实时输出到控制台
-      safeWrite(process.stderr, text);
-    });
-
-    // 处理流结束事件
-    child.stdout.on("end", () => {
-      // stdout 流结束
-    });
-
-    child.stderr.on("end", () => {
-      // stderr 流结束
-    });
-
-    // 处理流错误
-    child.stdout.on("error", (err) => {
-      // 忽略 stdout 错误
-    });
-
-    child.stderr.on("error", (err) => {
-      // 忽略 stderr 错误
-    });
-
-    const timeoutMs = timeoutMinutes * 60 * 1000;
-    const timeoutId = setTimeout(() => {
-      isClosed = true;
-      child.kill("SIGTERM");
-      reject(new Error(`执行超时(超过 ${timeoutMinutes} 分钟)`));
-    }, timeoutMs);
-
-    child.on("close", (code) => {
-      isClosed = true;
-      clearTimeout(timeoutId);
-      const durationMs = Date.now() - startTime;
-      resolve({
-        exitCode: code ?? 0,
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
-        durationMs,
-      });
-    });
-
-    child.on("error", (err) => {
-      isClosed = true;
-      clearTimeout(timeoutId);
-      reject(err);
-    });
-  });
-}
-
 // ============================================================================
-// 4. Call-LLM 相关
-// ============================================================================
-
-/**
- * 查找 call-llm 脚本路径
- * @returns {string} 脚本路径或命令名
- */
-function find_call_llm_script() {
-  // 1. 尝试命令（如果已安装）
-  try {
-    const { spawnSync } = require("child_process");
-    const result = spawnSync("call-llm", ["--help"], {
-      encoding: "utf8",
-      timeout: 2000,
-    });
-    if (!result.error) {
-      return "call-llm";
-    }
-  } catch (e) {
-    // 忽略错误
-  }
-
-  // 2. 使用本地文件路径
-  const localPath = path.resolve(__dirname, "call-llm.js");
-  if (fs.existsSync(localPath)) {
-    return localPath;
-  }
-
-  // 3. 通过 require.resolve 查找
-  try {
-    const resolved = require.resolve("@n8flow/cursor-flow/call-llm.js");
-    if (fs.existsSync(resolved)) {
-      return resolved;
-    }
-  } catch (e) {
-    // 忽略错误
-  }
-
-  // 如果都找不到，返回默认路径（会在使用时检查）
-  return localPath;
-}
-
-/**
- * 执行一次 call-llm 调用
- * @param {string[]} args - call-llm 参数数组
- * @param {number} timeoutSeconds - 超时时间(秒)
- * @returns {Promise<Object>} { exitCode, stdout, stderr, durationMs }
- */
-function run_call_llm_once(args, timeoutSeconds = 60) {
-  return new Promise((resolve, reject) => {
-    const startTime = Date.now();
-    const scriptPathOrCommand = find_call_llm_script();
-
-    // 检查是否是文件路径且文件存在
-    if (scriptPathOrCommand !== "call-llm" && !fs.existsSync(scriptPathOrCommand)) {
-      reject(new Error(`call-llm 不存在: ${scriptPathOrCommand}`));
-      return;
-    }
-
-    const isCommand = scriptPathOrCommand === "call-llm";
-    logInfo(`执行 call-llm: ${colorize((isCommand ? "call-llm" : `node ${scriptPathOrCommand}`) + " " + args.join(" "), "dim")}`);
-
-    const child = spawn(
-      isCommand ? "call-llm" : "node",
-      isCommand ? args : [scriptPathOrCommand, ...args],
-      {
-        cwd: process.cwd(),
-        stdio: ["ignore", "pipe", "pipe"],
-      }
-    );
-
-    let stdout = "";
-    let stderr = "";
-
-    child.stdout.on("data", (data) => {
-      stdout += data.toString();
-    });
-
-    child.stderr.on("data", (data) => {
-      stderr += data.toString();
-    });
-
-    const timeoutMs = timeoutSeconds * 1000;
-    const timeoutId = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error(`call-llm 执行超时(超过 ${timeoutSeconds} 秒)`));
-    }, timeoutMs);
-
-    child.on("close", (code) => {
-      clearTimeout(timeoutId);
-      resolve({
-        exitCode: code ?? 0,
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
-        durationMs: Date.now() - startTime,
-      });
-    });
-
-    child.on("error", (err) => {
-      clearTimeout(timeoutId);
-      reject(err);
-    });
-  });
-}
-
-/**
- * 解析 call-llm 返回的 JSON 结果
- * @param {string} stdout - call-llm 的标准输出
- * @returns {Object} { result: "done"|"resume"|"auto", reasons: string[] }
- */
-function parse_llm_result(stdout) {
-  try {
-    const json = JSON.parse(stdout.trim());
-    if (json.result === "done" || json.result === "resume" || json.result === "auto") {
-      return {
-        result: json.result,
-        reasons: json.reasons || [json.result],
-      };
-    }
-    throw new Error(`无效的结果值: ${json.result}`);
-  } catch (err) {
-    // 解析失败，返回默认值
-    return {
-      result: "resume",
-      reasons: [`JSON解析失败: ${err.message}`],
-    };
-  }
-}
-
-// ============================================================================
-// 5. 语义判定相关
-// ============================================================================
-
-/**
- * 生成语义判定提示（用于 call-llm）
- * @returns {string} 判定提示
- */
-function build_semantic_prompt() {
-  return `请分析评估以上内容的含义。如果内容的意思是已经完成所有任务工作，那么返回"done"；如果内容的意思是已经完成了部分工作任务，还有工作任务需要继续，那么返回"resume"；如果内容的包含建议部分，例如提出多个后续方案，或者建议可选择继续执行一些非必要的任务，那么就返回"auto"。返回的内容以JSON格式返回，例如: {"result":"done"}。`;
-}
-
-/**
- * 通过 call-llm 进行语义判定
- * @param {string} judgeModel - 用于判定的 LLM 模型
- * @param {string} executionSummary - cursor-agent 执行后的总结内容
- * @returns {Promise<Object>} SemanticsResult { result: "done"|"resume"|"auto", reasons: string[] }
- */
-async function interpret_semantics_via_llm(judgeModel, executionSummary) {
-  try {
-    const judgePrompt = build_semantic_prompt();
-
-    // 构建 call-llm 参数
-    const args = [
-      "-m", judgeModel,
-      "-f", "json",
-      "-c", executionSummary.substring(0, 5000), // 限制长度
-      "-p", judgePrompt,
-    ];
-
-    logInfo(`[语义判定] 使用模型: ${colorize(judgeModel, "cyan")}`);
-    
-    const result = await run_call_llm_once(args, 60); // 60秒超时
-
-    if (result.exitCode !== 0 || result.stderr) {
-      logWarning(`[语义判定] call-llm 返回非零退出码或错误输出`);
-      return {
-        result: "resume",
-        reasons: ["语义判定调用失败，默认需要继续执行"],
-      };
-    }
-
-    const parsed = parse_llm_result(result.stdout);
-    logInfo(`[语义判定] 结果: ${colorize(parsed.result, parsed.result === "done" ? "green" : "yellow")}`);
-    
-    return parsed;
-  } catch (err) {
-    logError(`语义判定调用失败: ${err.message}`);
-    return {
-      result: "resume",
-      reasons: [`判定调用失败: ${err.message}`],
-    };
-  }
-}
-
-// ============================================================================
-// 5. 报告生成
+// 4. 报告生成
 // ============================================================================
 
 /**
@@ -1175,11 +871,11 @@ async function execute_task(task, globalConfig, prompts) {
   }
 
   const startedAt = new Date().toISOString();
-  const executions = [];
-  let attempts = 0;
-  let finalStatus = "成功";
   let errorMessage = null; // 简短错误信息(用于 task.json)
   let detailedError = null; // 详细错误信息(用于报告)
+  let attempts = 0;
+  let finalStatus = "成功";
+  let executions = [];
 
   try {
     // 检查 spec_file(s) 是否存在（如果提供了 spec_file，支持单个文件或文件数组）
@@ -1199,123 +895,85 @@ async function execute_task(task, globalConfig, prompts) {
       throw new Error(`cursor-agent-task 不存在: ${agentScriptOrCommand}`);
     }
 
-    let needsContinue = true;
-    let lastResult = null;
-    let lastSemanticsResult = null;
-
-    // 首次执行使用 cursor-agent-task
-    let agentArgs = build_agent_args(
+    // 构建参数（包括新增的 judgeModel, retry, timeout）
+    const agentArgs = build_agent_args(
       globalConfig.model,
       prompts,
       task.spec_file,
-      task.prompt
+      task.prompt,
+      globalConfig.judgeModel,
+      globalConfig.retry,
+      globalConfig.timeoutMinutes
     );
 
-    // 主循环: 执行 -> 判定 -> 继续或完成
-    while (needsContinue && attempts < globalConfig.retry) {
-      attempts++;
+    // 调用 cursor-agent-task.js（只调用一次，它会内部处理循环）
+    // 超时时间应该是 每次超时 * 重试次数
+    const totalTimeoutMinutes = globalConfig.timeoutMinutes * globalConfig.retry;
+    logTaskStatus(task.name, "pending", `调用 cursor-agent-task（总超时: ${totalTimeoutMinutes} 分钟）`);
+    
+    const result = await run_agent_once(agentArgs, totalTimeoutMinutes);
 
-      logTaskStatus(task.name, "pending", `第 ${colorize(attempts, "cyan")} 次执行开始`);
-
-      try {
-        let result;
-        
-        // 根据是否是首次执行选择调用方式
-        if (attempts === 1) {
-          // 首次执行：使用 cursor-agent-task
-          result = await run_agent_once(agentArgs, globalConfig.timeoutMinutes);
-        } else {
-          // 后续执行：使用 cursor-agent resume（直接调用）
-          const resumePrompt = lastSemanticsResult?.result === "auto"
-            ? "按你的建议执行"
-            : "请继续";
-          
-          logInfo(`使用 resume 模式: ${colorize(resumePrompt, "cyan")}`);
-          result = await run_cursor_agent_directly(
-            globalConfig.model,
-            resumePrompt,
-            globalConfig.timeoutMinutes
-          );
+    // 解析返回的 JSON 结果
+    // 注意：stdout 中可能包含助手输出的文本，需要提取 JSON 部分
+    try {
+      let jsonText = result.stdout.trim();
+      
+      // 尝试找到 JSON 对象（从最后一个 { 开始，匹配到对应的 }）
+      // 这样可以忽略 JSON 之前的任何文本
+      const lastBraceIndex = jsonText.lastIndexOf("{");
+      if (lastBraceIndex >= 0) {
+        // 从最后一个 { 开始，尝试找到匹配的 }
+        let braceCount = 0;
+        let jsonEndIndex = -1;
+        for (let i = lastBraceIndex; i < jsonText.length; i++) {
+          if (jsonText[i] === "{") braceCount++;
+          if (jsonText[i] === "}") braceCount--;
+          if (braceCount === 0) {
+            jsonEndIndex = i + 1;
+            break;
+          }
         }
-
-        lastResult = result;
-
-        // 检查运行时错误
-        if (is_runtime_error(result.exitCode, result.stderr)) {
-          logTaskStatus(task.name, "error", "检测到运行时错误");
-          const fullError = `运行时错误: 退出码 ${result.exitCode}\n${result.stderr || "无错误输出"}\n\n标准输出:\n${result.stdout}`;
-          detailedError = fullError;
-          errorMessage = extract_short_error_message(fullError);
-          finalStatus = "失败";
-          executions.push({
-            index: attempts,
-            durationMs: result.durationMs,
-            conclusion: "运行时错误",
-            notes: [
-              fullError.substring(0, 500) +
-                (fullError.length > 500 ? "..." : ""),
-            ],
-          });
-          break;
+        if (jsonEndIndex > lastBraceIndex) {
+          jsonText = jsonText.substring(lastBraceIndex, jsonEndIndex);
         }
-
-        // 进行语义判定（使用 call-llm）
-        logInfo(`进行语义判定 ${colorize(icons.target, "yellow")}`);
-        const executionSummary = result.stdout.substring(0, 5000);
-        const semanticsResult = await interpret_semantics_via_llm(
-          globalConfig.judgeModel,
-          executionSummary
-        );
-        
-        lastSemanticsResult = semanticsResult; // 保存用于下次判断
-
-        // 记录本次执行
-        executions.push({
-          index: attempts,
-          durationMs: result.durationMs,
-          conclusion: semanticsResult.result === "done" ? "已完成" : 
-                      semanticsResult.result === "auto" ? "建议继续" : "需要继续",
-          notes: [
-            `判定结果: ${semanticsResult.result}`,
-            ...semanticsResult.reasons,
-            result.stdout.substring(0, 200) + "...",
-          ],
-        });
-
-        // 根据结果处理
-        if (semanticsResult.result === "done") {
-          logTaskStatus(task.name, "success", "任务已完成");
-          finalStatus = "成功";
-          needsContinue = false;
-          break; // 退出循环，继续下一个任务
-        } else {
-          // resume 或 auto：标记需要继续，下次循环使用 resume 模式
-          needsContinue = true;
-          logTaskStatus(task.name, "pending", `需要继续执行 (${semanticsResult.result})`);
-          // 继续循环，下次使用 resume 模式
-        }
-      } catch (err) {
-        logTaskStatus(task.name, "error", `执行出错: ${err.message}`);
-        const fullError = err.stack || err.message;
+      }
+      
+      const executionResult = JSON.parse(jsonText);
+      attempts = executionResult.attempts || 0;
+      executions = executionResult.executions || [];
+      
+      // 根据 JSON 中的 success 字段判断，而不是退出码
+      if (executionResult.success === true) {
+        logTaskStatus(task.name, "success", "任务已完成");
+        finalStatus = "成功";
+        // 确保成功时清除错误信息
+        errorMessage = null;
+        detailedError = null;
+      } else if (executionResult.finalStatus === "partial") {
+        logWarning(`达到重试上限(${globalConfig.retry}),标记为部分完成`);
+        finalStatus = "部分完成";
+        errorMessage = null; // 部分完成不算错误
+      } else {
+        logTaskStatus(task.name, "error", "任务执行失败");
+        finalStatus = "失败";
+        errorMessage = executionResult.errorMessage || "任务执行失败";
+        detailedError = executionResult.errorMessage || "任务执行失败";
+      }
+    } catch (parseErr) {
+      // 如果 JSON 解析失败，再检查是否是运行时错误
+      if (is_runtime_error(result.exitCode, result.stderr)) {
+        logTaskStatus(task.name, "error", "cursor-agent-task 执行失败");
+        const fullError = `运行时错误: 退出码 ${result.exitCode}\n${result.stderr || "无错误输出"}\n\n标准输出:\n${result.stdout}`;
         detailedError = fullError;
         errorMessage = extract_short_error_message(fullError);
         finalStatus = "失败";
-        executions.push({
-          index: attempts,
-          durationMs: 0,
-          conclusion: "执行出错",
-          notes: [
-            fullError.substring(0, 500) + (fullError.length > 500 ? "..." : ""),
-          ],
-        });
-        break;
+      } else {
+        logTaskStatus(task.name, "error", `解析执行结果失败: ${parseErr.message}`);
+        logError(`原始输出前500字符: ${result.stdout.substring(0, 500)}`);
+        errorMessage = `解析执行结果失败: ${parseErr.message}`;
+        detailedError = `解析执行结果失败: ${parseErr.message}\n\n原始输出:\n${result.stdout}`;
+        finalStatus = "失败";
       }
-    }
-
-    // 如果达到重试上限仍未完成
-    if (needsContinue && attempts >= globalConfig.retry) {
-      logWarning(`达到重试上限(${globalConfig.retry}),标记为部分完成`);
-      finalStatus = "部分完成";
     }
   } catch (err) {
     logTaskStatus(task.name, "error", `任务执行失败: ${err.message}`);
@@ -1355,8 +1013,18 @@ async function execute_task(task, globalConfig, prompts) {
   const reportIcon = colorize(icons.report, "magenta");
   logSuccess(`报告已保存: ${reportIcon} ${colorize(reportPath, "cyan")}`);
 
+  // 确定最终状态
+  let resultStatus;
+  if (finalStatus === "成功") {
+    resultStatus = "done";
+  } else if (finalStatus === "部分完成") {
+    resultStatus = "done"; // 部分完成也视为 done，避免无限重试
+  } else {
+    resultStatus = "error";
+  }
+
   return {
-    status: errorMessage ? "error" : "done",
+    status: resultStatus,
     error_message: errorMessage, // 简短错误信息(保存到 task.json)
     detailedError, // 详细错误信息(已保存到报告中)
     reportPath,
@@ -1519,13 +1187,6 @@ module.exports = {
   build_agent_args,
   run_agent_once,
   is_runtime_error,
-  find_cursor_agent_command,
-  run_cursor_agent_directly,
-  find_call_llm_script,
-  run_call_llm_once,
-  parse_llm_result,
-  build_semantic_prompt,
-  interpret_semantics_via_llm,
   write_task_report,
   update_task_status,
   save_task_file,

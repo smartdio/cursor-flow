@@ -1,0 +1,25 @@
+{
+  "prompts": [
+    ".flow/skills/global.md"
+  ],
+  "tasks": [
+    {
+      "name": "编写说明文档1",
+      "description": "编写说明文档1",
+      "prompt": "编写 cursor-tasks 的说明文档, 文档保存在 .flow/doc",
+      "status": "done",
+      "report": "doc/tasks/report/编写说明文档1_2025-11-02T02-39-24.md"
+    },
+    {
+      "name": "检查文档的完整性",
+      "description": "检查文档的完整性",
+      "spec_file": [
+        ".flow/spec/check-doc.md"
+      ],
+      "prompt": "报告文档保存在 .flow/report/check-doc.md",
+      "status": "error",
+      "error_message": "运行时错误: 退出码 1",
+      "report": "doc/tasks/report/检查文档的完整性_2025-11-02T02-39-26.md"
+    }
+  ]
+}

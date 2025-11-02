@@ -8,8 +8,7 @@ const os = require("os");
 const { spawn, spawnSync } = require("child_process");
 const readline = require("readline");
 
-// 全局标志：标记浏览器是否已关闭
-let browserClosed = false;
+// 注意: 已移除浏览器关闭相关功能
 
 // 日志输出函数（输出到 stderr，避免影响 stdout）
 function log(message, ...args) {
@@ -22,114 +21,44 @@ function logStep(step, message, ...args) {
   log(`[步骤 ${step}]`, message, ...args);
 }
 
-/**
- * 关闭 MCP 浏览器
- * 尝试关闭所有相关的浏览器进程
- */
-async function closeMCPBrowser() {
-  logStep(9, "开始关闭 MCP 浏览器");
-
-  try {
-    // 尝试通过 MCP chrome-devtools 的方式关闭
-    // 首先尝试查找并关闭相关的浏览器进程
-    const browserProcessNames = [
-      "chrome",
-      "chromium",
-      "google-chrome",
-      "Google Chrome",
-      "Chromium",
-    ];
-
-    let closedAny = false;
-
-    // 在 macOS/Linux 上使用 ps 和 kill
-    if (process.platform === "darwin" || process.platform === "linux") {
-      for (const browserName of browserProcessNames) {
-        try {
-          // 查找进程
-          const psResult = spawnSync("ps", ["aux"], { encoding: "utf8" });
-          if (psResult.stdout) {
-            const lines = psResult.stdout.split("\n");
-            const browserProcesses = lines.filter(
-              (line) =>
-                line.includes(browserName) &&
-                (line.includes("--remote-debugging-port") ||
-                  line.includes("chromedriver") ||
-                  line.includes("headless"))
-            );
-
-            for (const processLine of browserProcesses) {
-              const parts = processLine.trim().split(/\s+/);
-              if (parts.length > 1) {
-                const pid = parts[1];
-                if (pid && /^\d+$/.test(pid)) {
-                  try {
-                    spawnSync("kill", ["-9", pid], { encoding: "utf8" });
-                    logStep(9, `已关闭浏览器进程 PID: ${pid}`);
-                    closedAny = true;
-                  } catch (e) {
-                    // 忽略错误，进程可能已经关闭
-                  }
-                }
-              }
-            }
-          }
-        } catch (e) {
-          // 忽略错误，继续尝试其他方法
-        }
-      }
-    }
-
-    // 尝试通过 pkill 命令（如果在 Linux/macOS 上可用）
-    if (process.platform === "darwin" || process.platform === "linux") {
-      try {
-        // 查找带有 MCP 相关标志的 Chrome 进程
-        const pkillResult = spawnSync(
-          "pkill",
-          ["-f", "--remote-debugging-port"],
-          { encoding: "utf8" }
-        );
-        if (pkillResult.status === 0) {
-          logStep(9, "通过 pkill 关闭了浏览器进程");
-          closedAny = true;
-        }
-      } catch (e) {
-        // pkill 可能不存在或失败，忽略
-      }
-    }
-
-    if (!closedAny) {
-      logStep(9, "未找到需要关闭的浏览器进程，或浏览器已关闭");
-    } else {
-      logStep(9, "浏览器关闭操作完成");
-    }
-  } catch (err) {
-    logStep(9, `关闭浏览器时出错: ${err.message}`);
-    // 不抛出错误，确保脚本能正常退出
-  }
-}
+// 注意: 已移除 closeMCPBrowser 函数
+// 作为通用脚本，不应该管理浏览器的生命周期
 
 function printUsage() {
   const text = `用法:
-  cursor-agent-task.js [-s "系统提示词"] [-p "提示词"] [-f 提示词文件(可多次)] [-- 其他参数]
+  cursor-agent-task.js [-s "系统提示词"] [-p "提示词"] [-f 提示词文件(可多次)] [选项] [-- 其他参数]
 
 参数:
-  -s, --system   系统提示词（可选）
-  -p, --prompt   普通提示词（可选，可与 -f 同时使用）
-  -f, --file     从文件读取提示词（可多次；可与 -p 同时使用；传 - 表示从 stdin 读取）
-  -m, --model    指定 cursor-agent 模型名称（默认: auto）
-  -h, --help     显示帮助
+  -s, --system        系统提示词（可选）
+  -p, --prompt        普通提示词（可选，可与 -f 同时使用）
+  -f, --file          从文件读取提示词（可多次；可与 -p 同时使用；传 - 表示从 stdin 读取）
+  -m, --model         指定 cursor-agent 模型名称（默认: auto）
+  --judge-model <model>  语义判定模型（必需，用于判断任务是否完成）
+  --retry <num>       最大重试次数（默认: 3）
+  --timeout <minutes> 每次执行的超时时间，分钟（默认: 60）
+  -h, --help          显示帮助
 
 说明:
   - 若提供系统提示词，则按 "系统提示词 + 两个换行 + 普通提示词" 合并；若未提供，则仅使用普通提示词。
   - 多个 --file 时，按传入顺序拼接内容，文件之间以两个换行分隔。
   - 若同时提供 -p 和 -f，合并顺序为：先合并所有 -f 文件内容，最后追加 -p 内容（之间用两个换行分隔）。
-  - 脚本将尝试自动探测 cursor-agent 的可用调用方式:
-      1) cursor-agent --prompt "..."
-      2) cursor-agent run --prompt "..."
-      3) cursor-agent --file tmpfile
-      4) 回退: 通过管道将合并后的提示词写入 cursor-agent 标准输入
-  - 可在 "--" 之后追加要透传给 cursor-agent 的其他参数。`;
+  - 脚本会持续执行任务直到完成：
+      - 首次执行：调用 cursor-agent 执行任务
+      - 判断是否需要继续：使用 call-llm 进行语义判定
+      - 如果需要继续：调用 cursor-agent resume 继续执行
+      - 循环执行直到任务完成或达到重试上限
+  - 可在 "--" 之后追加要透传给 cursor-agent 的其他参数。
+  - 执行结果以 JSON 格式输出到 stdout，日志输出到 stderr。
+
+示例:
+  # 使用 .flow 目录下的提示词文件
+  cursor-agent-task -f .flow/prompts/system-prompt.md -f .flow/spec/task.md --judge-model gpt-4
+  
+  # 使用系统提示词和规格文件
+  cursor-agent-task -s "你是一个专业的开发者" -f .flow/spec/task.md --judge-model gpt-4
+  
+  # 使用直接提示词
+  cursor-agent-task -p "请帮我实现一个功能" --judge-model gpt-4`;
   console.log(text);
 }
 
@@ -139,6 +68,9 @@ function parseArgs(argv) {
     promptFiles: [],
     systemPrompt: "",
     model: "auto",
+    judgeModel: null, // 语义判定模型（必需）
+    retry: 3, // 最大重试次数
+    timeoutMinutes: 60, // 每次执行的超时时间（分钟），默认1小时
     help: false,
     positional: [],
   };
@@ -178,6 +110,36 @@ function parseArgs(argv) {
       i += 2;
       continue;
     }
+    if (a === "--judge-model") {
+      if (i + 1 >= argv.length) {
+        die(2, "错误: --judge-model 需要一个参数");
+      }
+      state.judgeModel = argv[i + 1];
+      i += 2;
+      continue;
+    }
+    if (a === "--retry") {
+      if (i + 1 >= argv.length) {
+        die(2, "错误: --retry 需要一个参数");
+      }
+      state.retry = parseInt(argv[i + 1], 10);
+      if (isNaN(state.retry) || state.retry < 1) {
+        die(2, "错误: --retry 必须是一个正整数");
+      }
+      i += 2;
+      continue;
+    }
+    if (a === "--timeout") {
+      if (i + 1 >= argv.length) {
+        die(2, "错误: --timeout 需要一个参数");
+      }
+      state.timeoutMinutes = parseInt(argv[i + 1], 10);
+      if (isNaN(state.timeoutMinutes) || state.timeoutMinutes < 1) {
+        die(2, "错误: --timeout 必须是一个正整数");
+      }
+      i += 2;
+      continue;
+    }
     if (a === "-h" || a === "--help") {
       state.help = true;
       i += 1;
@@ -197,16 +159,7 @@ function die(code, message) {
   if (message) {
     console.error(message);
   }
-  // 关闭浏览器（使用异步但不等待，因为即将退出）
-  closeMCPBrowser()
-    .then(() => {
-      browserClosed = true;
       process.exit(code);
-    })
-    .catch(() => {
-      browserClosed = true;
-      process.exit(code);
-    });
 }
 
 async function readAll(stream) {
@@ -298,25 +251,357 @@ function ensureCursorAgentInstalled() {
   }
 }
 
-function hasPromptLong(helpText) {
-  return helpText.includes("--prompt");
-}
-
-function hasPromptShort(helpText) {
-  return /(^|\s)-p([\s,=]|$)/.test(helpText);
-}
-
-function hasRunAndPrompt(helpText) {
-  return /\brun\b/.test(helpText) && helpText.includes("--prompt");
-}
-
-function hasFileOption(helpText) {
-  return /(\s--file\b|\s-f\b)/.test(helpText);
-}
-
 function hasStreamFlag(helpText) {
   return helpText.includes("--stream-partial-output");
 }
+
+// ============================================================================
+// Call-LLM 相关（用于语义判定）
+// ============================================================================
+
+/**
+ * 查找 call-llm 脚本路径
+ * @returns {string} 脚本路径或命令名
+ */
+function findCallLLMScript() {
+  // 1. 尝试命令（如果已安装）
+  try {
+    const { spawnSync } = require("child_process");
+    const result = spawnSync("call-llm", ["--help"], {
+      encoding: "utf8",
+      timeout: 2000,
+    });
+    if (!result.error) {
+      return "call-llm";
+    }
+  } catch (e) {
+    // 忽略错误
+  }
+
+  // 2. 使用本地文件路径
+  const localPath = path.resolve(__dirname, "call-llm.js");
+  if (fs.existsSync(localPath)) {
+    return localPath;
+  }
+
+  // 3. 通过 require.resolve 查找
+  try {
+    const resolved = require.resolve("@n8flow/cursor-flow/call-llm.js");
+    if (fs.existsSync(resolved)) {
+      return resolved;
+    }
+  } catch (e) {
+    // 忽略错误
+  }
+
+  // 如果都找不到，返回默认路径（会在使用时检查）
+  return localPath;
+}
+
+/**
+ * 执行一次 call-llm 调用
+ * @param {string[]} args - call-llm 参数数组
+ * @param {number} timeoutSeconds - 超时时间(秒)
+ * @returns {Promise<Object>} { exitCode, stdout, stderr, durationMs }
+ */
+function runCallLLMOnce(args, timeoutSeconds = 60) {
+  return new Promise((resolve, reject) => {
+    const startTime = Date.now();
+    const scriptPathOrCommand = findCallLLMScript();
+
+    // 检查是否是文件路径且文件存在
+    if (scriptPathOrCommand !== "call-llm" && !fs.existsSync(scriptPathOrCommand)) {
+      reject(new Error(`call-llm 不存在: ${scriptPathOrCommand}`));
+      return;
+    }
+
+    const isCommand = scriptPathOrCommand === "call-llm";
+    logStep(10, `执行 call-llm: ${(isCommand ? "call-llm" : `node ${scriptPathOrCommand}`) + " " + args.join(" ")}`);
+
+    const child = spawn(
+      isCommand ? "call-llm" : "node",
+      isCommand ? args : [scriptPathOrCommand, ...args],
+      {
+        cwd: process.cwd(),
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    child.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    const timeoutMs = timeoutSeconds * 1000;
+    const timeoutId = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error(`call-llm 执行超时(超过 ${timeoutSeconds} 秒)`));
+    }, timeoutMs);
+
+    child.on("close", (code) => {
+      clearTimeout(timeoutId);
+      resolve({
+        exitCode: code ?? 0,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        durationMs: Date.now() - startTime,
+      });
+    });
+
+    child.on("error", (err) => {
+      clearTimeout(timeoutId);
+      reject(err);
+    });
+  });
+}
+
+/**
+ * 解析 call-llm 返回的 JSON 结果
+ * @param {string} stdout - call-llm 的标准输出
+ * @returns {Object} { result: "done"|"resume"|"auto", reasons: string[] }
+ */
+function parseLLMResult(stdout) {
+  try {
+    const json = JSON.parse(stdout.trim());
+    if (json.result === "done" || json.result === "resume" || json.result === "auto") {
+      return {
+        result: json.result,
+        reasons: json.reasons || [json.result],
+      };
+    }
+    throw new Error(`无效的结果值: ${json.result}`);
+  } catch (err) {
+    // 解析失败，返回默认值
+    return {
+      result: "resume",
+      reasons: [`JSON解析失败: ${err.message}`],
+    };
+  }
+}
+
+/**
+ * 生成语义判定提示（用于 call-llm）
+ * @returns {string} 判定提示
+ */
+function buildSemanticPrompt() {
+  return `请分析评估以上内容的含义。如果内容的意思是已经完成所有任务工作，那么返回"done"；如果内容的意思是已经完成了部分工作任务，还有工作任务需要继续，那么返回"resume"；如果内容的包含建议部分，例如提出多个后续方案，或者建议可选择继续执行一些非必要的任务，那么就返回"auto"。返回的内容以JSON格式返回，例如: {"result":"done"}。`;
+}
+
+/**
+ * 通过 call-llm 进行语义判定
+ * @param {string} judgeModel - 用于判定的 LLM 模型
+ * @param {string} executionSummary - cursor-agent 执行后的总结内容
+ * @returns {Promise<Object>} SemanticsResult { result: "done"|"resume"|"auto", reasons: string[] }
+ */
+async function interpretSemanticsViaLLM(judgeModel, executionSummary) {
+  try {
+    const judgePrompt = buildSemanticPrompt();
+
+    // 构建 call-llm 参数
+    const args = [
+      "-m", judgeModel,
+      "-f", "json",
+      "-c", executionSummary.substring(0, 5000), // 限制长度
+      "-p", judgePrompt,
+    ];
+
+    logStep(10, `[语义判定] 使用模型: ${judgeModel}`);
+    
+    const result = await runCallLLMOnce(args, 60); // 60秒超时
+
+    if (result.exitCode !== 0 || result.stderr) {
+      logStep(10, `[语义判定] call-llm 返回非零退出码或错误输出`);
+      logStep(10, `[语义判定] 退出码: ${result.exitCode}`);
+      if (result.stderr) {
+        logStep(10, `[语义判定] 错误输出: ${result.stderr}`);
+      }
+      if (result.stdout) {
+        logStep(10, `[语义判定] 标准输出: ${result.stdout.substring(0, 500)}${result.stdout.length > 500 ? "..." : ""}`);
+      }
+      return {
+        result: "resume",
+        reasons: [
+          `语义判定调用失败，默认需要继续执行`,
+          `退出码: ${result.exitCode}`,
+          result.stderr ? `错误: ${result.stderr.substring(0, 200)}` : "无错误输出",
+        ],
+      };
+    }
+
+    const parsed = parseLLMResult(result.stdout);
+    logStep(10, `[语义判定] 结果: ${parsed.result}`);
+    
+    return parsed;
+  } catch (err) {
+    logStep(10, `语义判定调用失败: ${err.message}`);
+    return {
+      result: "resume",
+      reasons: [`判定调用失败: ${err.message}`],
+    };
+  }
+}
+
+// ============================================================================
+// Resume 调用相关
+// ============================================================================
+
+/**
+ * 查找 cursor-agent 命令路径
+ * @returns {string} 命令名（默认: "cursor-agent"）
+ */
+function findCursorAgentCommand() {
+  // 检查命令是否存在
+  try {
+    const { spawnSync } = require("child_process");
+    const result = spawnSync("cursor-agent", ["--version"], {
+      encoding: "utf8",
+      timeout: 2000,
+    });
+    if (!result.error) {
+      return "cursor-agent";
+    }
+  } catch (e) {
+    // 忽略错误
+  }
+  
+  // 如果命令不存在，抛出错误
+  throw new Error("cursor-agent 命令未找到，请确认已安装并在 PATH 中");
+}
+
+/**
+ * 调用 cursor-agent resume（用于继续执行任务）
+ * @param {string} model - 模型名称
+ * @param {string} prompt - 提示词（用于继续执行）
+ * @param {number} timeoutMinutes - 超时时间(分钟)
+ * @returns {Promise<Object>} AgentRunResult { exitCode, stdout, stderr, durationMs }
+ */
+function runCursorAgentResume(model, prompt, timeoutMinutes) {
+  return new Promise((resolve, reject) => {
+    const startTime = Date.now();
+    const command = findCursorAgentCommand();
+    const helpText = ensureCursorAgentInstalled();
+    const streamPartial = hasStreamFlag(helpText);
+
+    // 构建命令参数: cursor-agent resume --model <model> --print --output-format stream-json --force [prompt]
+    const args = [
+      "resume",                    // resume 命令
+      "--model", model,
+      "--print",
+      "--output-format", "stream-json",
+      "--force",
+    ];
+
+    // 检查 prompt 是否适合作为命令行参数传递
+    const hasNewlines = prompt.includes("\n") || prompt.includes("\r");
+    const isTooLong = prompt.length > 50000;
+    const needsStdinMode = hasNewlines || isTooLong;
+    let useStdinFallback = false;
+
+    if (needsStdinMode) {
+      // 如果 prompt 包含换行符或过长，使用标准输入传递
+      useStdinFallback = true;
+    } else {
+      // 直接作为位置参数传递
+      args.push(prompt);
+    }
+
+    logStep(11, `调用 cursor-agent resume: cursor-agent ${args.join(" ")}${useStdinFallback ? " (提示词通过 stdin 传递)" : ""}`);
+
+    const child = spawn(command, args, {
+      cwd: process.cwd(),
+      stdio: ["pipe", "pipe", "pipe"],
+      encoding: "utf8",
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let isClosed = false;
+
+    // 安全写入函数，检查流是否可写
+    const safeWrite = (stream, text) => {
+      if (!isClosed && stream && !stream.destroyed && stream.writable) {
+        try {
+          stream.write(text);
+        } catch (err) {
+          // 忽略写入错误（流可能已关闭）
+        }
+      }
+    };
+
+    if (child.stdout) child.stdout.setEncoding("utf8");
+    if (child.stderr) child.stderr.setEncoding("utf8");
+
+    // 处理 stdin：如果需要通过 stdin 传递提示词
+    if (useStdinFallback) {
+      child.stdin.write(prompt + "\n", "utf8");
+      child.stdin.end();
+      logStep(11, "提示词已通过 stdin 传递");
+    } else {
+      child.stdin.end();
+    }
+
+    // 检查是否支持流式输出
+    if (streamPartial) {
+      // 流式模式：使用 pipeThroughAssistantFilter 提取文本并显示
+      // 同时收集提取后的文本用于语义判定
+      pipeThroughAssistantFilter(child.stdout, () => {
+        // 流式处理完成
+      }, (extractedText) => {
+        // 收集提取的文本
+        stdout = extractedText;
+      });
+    } else {
+      // 非流式模式：直接收集输出
+      child.stdout.on("data", (data) => {
+        const text = data.toString();
+        stdout += text;
+        // 输出到 stderr，避免污染 stdout（JSON 输出）
+        safeWrite(process.stderr, data);
+      });
+    }
+
+    child.stderr.on("data", (data) => {
+      const text = data.toString();
+      stderr += text;
+      // 实时输出到控制台
+      safeWrite(process.stderr, text);
+    });
+
+    const timeoutMs = timeoutMinutes * 60 * 1000;
+    const timeoutId = setTimeout(() => {
+      isClosed = true;
+      child.kill("SIGTERM");
+      reject(new Error(`执行超时(超过 ${timeoutMinutes} 分钟)`));
+    }, timeoutMs);
+
+    child.on("close", (code) => {
+      isClosed = true;
+      clearTimeout(timeoutId);
+      const durationMs = Date.now() - startTime;
+      resolve({
+        exitCode: code ?? 0,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        durationMs,
+      });
+    });
+
+    child.on("error", (err) => {
+      isClosed = true;
+      clearTimeout(timeoutId);
+      reject(err);
+    });
+  });
+}
+
+// 注意: cursor-agent 没有 --prompt 或 --file 选项
+// 提示词应该作为位置参数传递，或通过标准输入传递
 
 /**
  * 从 JSON 对象中提取 assistant 文本内容
@@ -544,8 +829,11 @@ function extractAssistantText(jsonObj) {
 /**
  * 流式过滤函数：从 cursor-agent 的流式输出中提取并渲染 assistant 文本内容
  * 处理 NDJSON 格式（每行一个 JSON 对象）和 SSE 格式
+ * @param {Stream} stream - 输入流
+ * @param {Function} onEnd - 结束回调
+ * @param {Function} [onText] - 文本收集回调，接收提取的完整文本
  */
-function pipeThroughAssistantFilter(stream, onEnd) {
+function pipeThroughAssistantFilter(stream, onEnd, onText) {
   logStep(7, "初始化流式输出过滤器");
 
   let printedAny = false;
@@ -611,13 +899,14 @@ function pipeThroughAssistantFilter(stream, onEnd) {
               // 增量更新：只输出新增的部分
               const newPart = extracted.slice(lastOutput.length);
               if (newPart.length > 0) {
-                process.stdout.write(newPart, "utf8");
+                // 输出到 stderr，避免污染 stdout（JSON 输出）
+                process.stderr.write(newPart, "utf8");
                 printedAny = true;
                 lastOutput = extracted; // 更新记录的完整内容
               }
             } else if (extracted !== lastOutput) {
               // 内容完全不一样（这种情况很少），输出全部
-              process.stdout.write(extracted, "utf8");
+              process.stderr.write(extracted, "utf8");
               printedAny = true;
               lastOutput = extracted;
             }
@@ -683,7 +972,8 @@ function pipeThroughAssistantFilter(stream, onEnd) {
             const obj = JSON.parse(jsonStr);
             const extracted = extractAssistantText(obj);
             if (extracted && extracted !== "null" && extracted.length > 0) {
-              process.stdout.write(extracted, "utf8");
+              // 输出到 stderr，避免污染 stdout（JSON 输出）
+              process.stderr.write(extracted, "utf8");
               printedAny = true;
             }
           } catch (_) {
@@ -695,7 +985,12 @@ function pipeThroughAssistantFilter(stream, onEnd) {
 
     // 如果输出了任何内容，添加换行符
     if (printedAny) {
-      process.stdout.write("\n");
+      process.stderr.write("\n");
+    }
+
+    // 调用文本收集回调（如果提供）
+    if (onText && lastOutput) {
+      onText(lastOutput);
     }
 
     // 仅在DEBUG模式下输出统计信息
@@ -738,8 +1033,13 @@ async function main() {
     positionalArgsCount: args.positional.length,
   });
 
+  // 验证必需参数
   if (!args.prompt && args.promptFiles.length === 0) {
     die(2, "错误: 必须提供 --prompt 或 --file 其中之一");
+  }
+
+  if (!args.judgeModel) {
+    die(2, "错误: 必须提供 --judge-model 参数（用于语义判定）");
   }
 
   const userPrompt = await buildUserPrompt(args.prompt, args.promptFiles);
@@ -750,230 +1050,290 @@ async function main() {
     : userPrompt;
   logStep(4, "提示词合并完成，总长度:", combinedPrompt.length, "字符");
 
-  const helpText = ensureCursorAgentInstalled();
+  // 执行任务循环
+  const result = await executeTaskWithRetry(
+    combinedPrompt,
+    args.model,
+    args.judgeModel,
+    args.retry,
+    args.timeoutMinutes,
+    args.positional
+  );
 
-  logStep(5, "探测 cursor-agent 支持的调用方式");
+  // 输出 JSON 格式的执行结果到 stdout
+  console.log(JSON.stringify(result, null, 2));
+
+  // 根据结果设置退出码
+  const exitCode = result.success ? 0 : 1;
+  log("=".repeat(60));
+  log("脚本执行完成");
+  log("=".repeat(60));
+  process.exit(exitCode);
+}
+
+/**
+ * 执行单次 cursor-agent 调用（首次执行）
+ * @param {string} prompt - 提示词
+ * @param {string} model - 模型名称
+ * @param {string[]} positionalArgs - 透传参数
+ * @param {number} timeoutMinutes - 超时时间（分钟）
+ * @returns {Promise<Object>} { exitCode, stdout, stderr, durationMs }
+ */
+function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
+  return new Promise((resolve, reject) => {
+    const startTime = Date.now();
+    const helpText = ensureCursorAgentInstalled();
   const streamPartial = hasStreamFlag(helpText);
-  logStep(5, "流式输出支持:", streamPartial ? "是" : "否");
 
-  let tmpfile = "";
   let runArgs = [];
   let useStdinFallback = false;
-  let callMethod = "";
 
-  logStep(6, "选择 cursor-agent 调用方式");
-  if (hasPromptLong(helpText)) {
-    // cursor-agent -p --model <model> --force --print [--stream-partial-output] --prompt <text>
-    callMethod = "方法1: --prompt 长选项";
-    runArgs = ["-p", "--model", args.model, "--force", "--print"];
+    // 检查 prompt 是否适合作为命令行参数传递
+    const hasNewlines = prompt.includes("\n") || prompt.includes("\r");
+    const isTooLong = prompt.length > 50000;
+    const needsStdinMode = hasNewlines || isTooLong;
+    
+    if (needsStdinMode) {
+      useStdinFallback = true;
+      runArgs = ["-p", "--model", model, "--force", "--print"];
     if (streamPartial) runArgs.push("--stream-partial-output");
-    runArgs.push("--prompt", combinedPrompt);
-  } else if (hasPromptShort(helpText)) {
-    // cursor-agent --model <model> --force --print [--stream-partial-output] -p <text>
-    callMethod = "方法2: -p 短选项";
-    runArgs = ["--model", args.model, "--force", "--print"];
-    if (streamPartial) runArgs.push("--stream-partial-output");
-    runArgs.push("-p", combinedPrompt);
-  } else if (hasRunAndPrompt(helpText)) {
-    // cursor-agent -p --model <model> --force --print [--stream-partial-output] run --prompt <text>
-    callMethod = "方法3: run --prompt";
-    runArgs = ["-p", "--model", args.model, "--force", "--print"];
-    if (streamPartial) runArgs.push("--stream-partial-output");
-    runArgs.push("run", "--prompt", combinedPrompt);
-  } else if (hasFileOption(helpText)) {
-    // cursor-agent -p --model <model> --force --print [--stream-partial-output] --file <tmpfile>
-    callMethod = "方法4: --file 临时文件";
-    const name = `cursor_prompt_${Date.now()}_${Math.random().toString(36).slice(2)}.txt`;
-    tmpfile = path.join(os.tmpdir(), name);
-    logStep(6, `创建临时文件: ${tmpfile}`);
-    await fsp.writeFile(tmpfile, combinedPrompt, "utf8");
-    logStep(6, "临时文件写入完成");
-    runArgs = ["-p", "--model", args.model, "--force", "--print"];
-    if (streamPartial) runArgs.push("--stream-partial-output");
-    runArgs.push("--file", tmpfile);
   } else {
-    // 回退: 通过 stdin 传递
-    callMethod = "方法5: stdin 回退模式";
-    useStdinFallback = true;
-    runArgs = ["-p", "--model", args.model, "--force", "--print"];
+      runArgs = ["-p", "--model", model, "--force", "--print"];
     if (streamPartial) runArgs.push("--stream-partial-output");
+      runArgs.push(prompt);
   }
-  logStep(6, `选择的调用方式: ${callMethod}`);
 
   // 检查是否已经包含 --output-format 参数
-  // 检查 positional 参数中是否有 --output-format 或其变体
-  const hasOutputFormat = args.positional.some((arg, idx) => {
-    // 检查 --output-format 或 --output-format=xxx 格式
+    const hasOutputFormat = positionalArgs.some((arg, idx) => {
     if (arg === "--output-format" || arg.startsWith("--output-format=")) {
       return true;
     }
-    // 检查前一个参数是否是 --output-format（说明下一个参数是值）
-    if (idx > 0 && args.positional[idx - 1] === "--output-format") {
+      if (idx > 0 && positionalArgs[idx - 1] === "--output-format") {
       return true;
     }
     return false;
   });
 
-  // 如果没有指定 --output-format，添加默认值 stream-json
   if (!hasOutputFormat) {
-    logStep(6, "添加默认参数: --output-format stream-json");
     runArgs.push("--output-format", "stream-json");
-  } else {
-    logStep(6, "检测到用户已指定 --output-format 参数，使用用户指定的值");
-  }
+    }
 
-  // 追加透传参数
-  if (args.positional.length > 0) {
-    logStep(6, `追加透传参数: ${args.positional.join(" ")}`);
-    runArgs = runArgs.concat(args.positional);
-  }
+    if (positionalArgs.length > 0) {
+      runArgs = runArgs.concat(positionalArgs);
+    }
 
-  logStep(6, "完整命令参数:", runArgs.join(" "));
-
-  logStep(7, "启动 cursor-agent 子进程");
-  // 设置编码并创建子进程
+    logStep(7, "启动 cursor-agent 子进程（首次执行）");
   const child = spawn("cursor-agent", runArgs, {
     stdio: ["pipe", "pipe", "pipe"],
     encoding: "utf8",
   });
-  logStep(7, "子进程已启动，PID:", child.pid);
 
-  // 设置 stdout/stderr 编码
   if (child.stdout) child.stdout.setEncoding("utf8");
   if (child.stderr) child.stderr.setEncoding("utf8");
 
-  let exitHandled = false;
-  const cleanup = async () => {
-    if (tmpfile) {
-      logStep(8, `清理临时文件: ${tmpfile}`);
-      try {
-        await fsp.unlink(tmpfile);
-        logStep(8, "临时文件已删除");
-      } catch (_) {
-        logStep(8, "删除临时文件失败（可能已不存在）");
+    let stdout = "";
+    let stderr = "";
+    let isClosed = false;
+
+    const safeWrite = (stream, text) => {
+      if (!isClosed && stream && !stream.destroyed && stream.writable) {
+        try {
+          stream.write(text);
+        } catch (err) {
+          // 忽略写入错误
+        }
       }
-    }
-  };
+    };
 
-  // 处理 stderr（错误输出直接透传）
   child.stderr.on("data", (d) => {
-    process.stderr.write(d);
+      const text = d.toString();
+      stderr += text;
+      safeWrite(process.stderr, d);
   });
 
-  // 处理 stdin：只在 fallback 模式下写入数据，否则直接关闭
-  logStep(
-    7,
-    `stdin 处理: ${useStdinFallback ? "写入提示词并关闭" : "直接关闭"}`
-  );
   if (useStdinFallback) {
-    // 通过 stdin 写入合并后的提示词
-    child.stdin.write(combinedPrompt + "\n", "utf8");
+      child.stdin.write(prompt + "\n", "utf8");
     child.stdin.end();
-    logStep(7, "stdin 提示词已写入并关闭");
   } else {
-    // 非 fallback 模式：直接关闭 stdin，避免 cursor-agent 等待输入
     child.stdin.end();
-    logStep(7, "stdin 已关闭");
   }
 
-  // 处理 stdout：根据是否启用流式输出选择不同的处理方式
   if (streamPartial) {
-    logStep(7, "启用流式输出过滤模式");
-    // 流式模式：使用过滤函数提取 assistant 文本
+      // 流式模式：使用 pipeThroughAssistantFilter 提取文本并显示
+      // 同时收集提取后的文本用于语义判定
     pipeThroughAssistantFilter(child.stdout, () => {
-      logStep(7, "流式输出过滤完成（readline 关闭）");
-      // stdout 流式过滤完成（readline 关闭）
-      // 注意：这里不退出，等待子进程的 close 事件
+        // 流式处理完成
+      }, (extractedText) => {
+        // 收集提取的文本
+        stdout = extractedText;
     });
   } else {
-    logStep(7, "使用非流式模式（直接透传输出）");
-    // 非流式模式：直接透传输出
-    let outputSize = 0;
     child.stdout.on("data", (d) => {
-      outputSize += d.length;
-      process.stdout.write(d);
-    });
-    child.stdout.on("end", () => {
-      logStep(7, `stdout 流结束，总输出大小: ${outputSize} 字节`);
-      // stdout 结束时确保输出刷新
-      // 注意：这里不退出，等待子进程的 close 事件
-    });
-  }
+        const text = d.toString();
+        stdout += text;
+        // 输出到 stderr，避免污染 stdout（JSON 输出）
+        safeWrite(process.stderr, d);
+      });
+    }
 
-  // 子进程关闭事件（统一处理退出逻辑）
-  child.on("close", async (code) => {
-    if (exitHandled) return;
-    exitHandled = true;
-    logStep(8, `子进程已关闭，退出码: ${code ?? 0}`);
-    await cleanup();
-    // 关闭浏览器
-    await closeMCPBrowser();
-    browserClosed = true;
-    // 确保 stdout 刷新
-    process.stdout.write("");
-    log("=".repeat(60));
-    log("脚本执行完成");
-    log("=".repeat(60));
-    process.exit(code ?? 0);
-  });
+    const timeoutMs = timeoutMinutes * 60 * 1000;
+    const timeoutId = setTimeout(() => {
+      isClosed = true;
+      child.kill("SIGTERM");
+      reject(new Error(`执行超时(超过 ${timeoutMinutes} 分钟)`));
+    }, timeoutMs);
 
-  // 子进程错误事件
-  child.on("error", async (err) => {
-    if (exitHandled) return;
-    exitHandled = true;
-    logStep(8, `子进程错误: ${String((err && err.message) || err)}`);
-    await cleanup();
-    // 关闭浏览器
-    await closeMCPBrowser();
-    browserClosed = true;
-    console.error(
-      `错误: 执行 cursor-agent 失败: ${String((err && err.message) || err)}`
-    );
-    process.exit(1);
+    child.on("close", (code) => {
+      isClosed = true;
+      clearTimeout(timeoutId);
+      const durationMs = Date.now() - startTime;
+      resolve({
+        exitCode: code ?? 0,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        durationMs,
+      });
+    });
+
+    child.on("error", (err) => {
+      isClosed = true;
+      clearTimeout(timeoutId);
+      reject(err);
+    });
   });
 }
 
-// 注册进程退出处理程序，确保任何时候退出都关闭浏览器
-process.on("exit", () => {
-  if (!browserClosed) {
-    // exit 事件不支持异步操作，使用同步方式关闭浏览器
+/**
+ * 执行任务循环（首次执行 -> 判定 -> resume -> ...）
+ * @param {string} prompt - 初始提示词
+ * @param {string} model - 模型名称
+ * @param {string} judgeModel - 语义判定模型
+ * @param {number} retry - 最大重试次数
+ * @param {number} timeoutMinutes - 每次执行的超时时间（分钟）
+ * @param {string[]} positionalArgs - 透传参数
+ * @returns {Promise<Object>} 执行结果
+ */
+async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMinutes, positionalArgs) {
+  const executions = [];
+  let attempts = 0;
+  let needsContinue = true;
+  let finalStatus = "done";
+  let errorMessage = null;
+  let lastSemanticsResult = null; // 保存上次的语义判定结果
+
+  logStep(12, "开始任务执行循环");
+  logStep(12, `最大重试次数: ${retry}, 每次超时: ${timeoutMinutes} 分钟`);
+
+  while (needsContinue && attempts < retry) {
+    attempts++;
+    logStep(12, `第 ${attempts} 次执行开始`);
+
     try {
-      // 尝试同步关闭浏览器进程
-      if (process.platform === "darwin" || process.platform === "linux") {
-        try {
-          spawnSync("pkill", ["-f", "--remote-debugging-port"], {
-            encoding: "utf8",
-            timeout: 1000,
-          });
-        } catch (e) {
-          // 忽略错误
-        }
+      let result;
+      
+      if (attempts === 1) {
+        // 首次执行：使用 cursor-agent（非 resume）
+        result = await runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes);
+      } else {
+        // 后续执行：使用 cursor-agent resume
+        // 根据上次语义判定结果决定提示词
+        const resumePrompt = lastSemanticsResult && lastSemanticsResult.result === "auto"
+          ? "按你的建议执行"
+          : "请继续";
+        
+        logStep(12, `使用 resume 模式继续执行: ${resumePrompt}`);
+        result = await runCursorAgentResume(model, resumePrompt, timeoutMinutes);
       }
-    } catch (e) {
-      // 忽略所有错误，确保能正常退出
+
+      // 检查运行时错误
+      if (result.exitCode !== 0 || result.stderr) {
+        logStep(12, `检测到运行时错误: 退出码 ${result.exitCode}`);
+        const fullError = `运行时错误: 退出码 ${result.exitCode}\n${result.stderr || "无错误输出"}\n\n标准输出:\n${result.stdout}`;
+        errorMessage = fullError.substring(0, 200);
+        finalStatus = "error";
+        executions.push({
+          index: attempts,
+          durationMs: result.durationMs,
+          conclusion: "运行时错误",
+          notes: [fullError.substring(0, 500) + (fullError.length > 500 ? "..." : "")],
+        });
+        break;
+      }
+
+      // 进行语义判定
+      logStep(12, "进行语义判定");
+      const executionSummary = result.stdout.substring(0, 5000);
+      const semanticsResult = await interpretSemanticsViaLLM(judgeModel, executionSummary);
+      
+      // 保存语义判定结果，用于下次 resume 时决定提示词
+      lastSemanticsResult = semanticsResult;
+
+      // 记录本次执行
+      executions.push({
+        index: attempts,
+        durationMs: result.durationMs,
+        conclusion: semanticsResult.result === "done" ? "已完成" : 
+                    semanticsResult.result === "auto" ? "建议继续" : "需要继续",
+        notes: [
+          `判定结果: ${semanticsResult.result}`,
+          ...semanticsResult.reasons,
+          result.stdout.substring(0, 200) + "...",
+        ],
+      });
+
+      // 根据结果处理
+      if (semanticsResult.result === "done") {
+        logStep(12, "任务已完成");
+        finalStatus = "done";
+        needsContinue = false;
+        break;
+      } else {
+        // resume 或 auto：标记需要继续
+        needsContinue = true;
+        logStep(12, `需要继续执行 (${semanticsResult.result})`);
+      }
+    } catch (err) {
+      logStep(12, `执行出错: ${err.message}`);
+      errorMessage = err.message;
+      finalStatus = "error";
+      executions.push({
+        index: attempts,
+        durationMs: 0,
+        conclusion: "执行出错",
+        notes: [err.message.substring(0, 500) + (err.message.length > 500 ? "..." : "")],
+      });
+      break;
     }
   }
-});
+
+  // 如果达到重试上限仍未完成
+  if (needsContinue && attempts >= retry) {
+    logStep(12, `达到重试上限(${retry}),标记为部分完成`);
+    finalStatus = "partial";
+  }
+
+  return {
+    success: finalStatus === "done",
+    attempts,
+    finalStatus,
+    executions,
+    errorMessage,
+  };
+}
 
 // 处理未捕获的异常
-process.on("uncaughtException", async (err) => {
+process.on("uncaughtException", (err) => {
   console.error("未捕获的异常:", err);
-  await closeMCPBrowser();
-  browserClosed = true;
   process.exit(1);
 });
 
 // 处理未处理的 Promise 拒绝
-process.on("unhandledRejection", async (reason, promise) => {
+process.on("unhandledRejection", (reason, promise) => {
   console.error("未处理的 Promise 拒绝:", reason);
-  await closeMCPBrowser();
-  browserClosed = true;
   process.exit(1);
 });
 
-main().catch(async (err) => {
-  await closeMCPBrowser();
-  browserClosed = true;
+main().catch((err) => {
   console.error(`错误: 脚本执行失败: ${String((err && err.message) || err)}`);
   process.exit(1);
 });
