@@ -720,8 +720,7 @@ async function write_task_report(
 ## 任务基本信息
 
 - **任务名称**: ${task.name}
-- **任务描述**: ${task.description}
-- **规格文件**: ${specFileDisplay}
+${task.description ? `- **任务描述**: ${task.description}\n` : ""}- **规格文件**: ${specFileDisplay}
 - **模型**: ${summary.model}
 - **超时设置**: ${summary.timeoutMinutes} 分钟
 - **重试次数**: ${summary.retry}
@@ -870,7 +869,6 @@ CURSOR_TASKS_JUDGE_MODEL=
         tasks: [
           {
             name: "示例任务",
-            description: "这是一个示例任务",
             prompt: "请完成这个示例任务",
             status: "pending"
           }
