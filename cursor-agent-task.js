@@ -24,6 +24,69 @@ function logStep(step, message, ...args) {
 // 注意: 已移除 closeMCPBrowser 函数
 // 作为通用脚本，不应该管理浏览器的生命周期
 
+/**
+ * 从 .flow/.env 文件加载环境变量
+ * 支持的变量：
+ * - OPENAI_API_KEY
+ * - OPENAI_API_BASE
+ * - CURSOR_TASKS_JUDGE_MODEL
+ */
+function loadEnvFile() {
+  const envFilePath = path.resolve(process.cwd(), ".flow", ".env");
+  
+  if (!fs.existsSync(envFilePath)) {
+    logStep(0, `环境变量文件不存在: ${envFilePath}`);
+    return;
+  }
+
+  logStep(0, `从文件加载环境变量: ${envFilePath}`);
+  
+  try {
+    const content = fs.readFileSync(envFilePath, "utf8");
+    const lines = content.split(/\r?\n/);
+    let loadedCount = 0;
+
+    for (const line of lines) {
+      // 跳过空行和注释
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) {
+        continue;
+      }
+
+      // 解析 KEY=VALUE 格式
+      const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+      if (match) {
+        const key = match[1];
+        let value = match[2];
+
+        // 移除引号（支持单引号和双引号）
+        if (
+          (value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))
+        ) {
+          value = value.slice(1, -1);
+        }
+
+        // 只加载指定的环境变量
+        if (
+          key === "OPENAI_API_KEY" ||
+          key === "OPENAI_API_BASE" ||
+          key === "CURSOR_TASKS_JUDGE_MODEL"
+        ) {
+          // 优先使用文件中的值（覆盖系统环境变量）
+          process.env[key] = value;
+          loadedCount++;
+          logStep(0, `已加载: ${key} = ${value.substring(0, 20)}${value.length > 20 ? "..." : ""}`);
+        }
+      }
+    }
+
+    logStep(0, `环境变量加载完成，共加载 ${loadedCount} 个变量`);
+  } catch (err) {
+    logStep(0, `读取环境变量文件失败: ${err.message}`);
+  }
+}
+
 function printUsage() {
   const text = `用法:
   cursor-agent-task.js [-s "系统提示词"] [-p "提示词"] [-f 提示词文件(可多次)] [选项] [-- 其他参数]
@@ -33,10 +96,17 @@ function printUsage() {
   -p, --prompt        普通提示词（可选，可与 -f 同时使用）
   -f, --file          从文件读取提示词（可多次；可与 -p 同时使用；传 - 表示从 stdin 读取）
   -m, --model         指定 cursor-agent 模型名称（默认: auto）
-  --judge-model <model>  语义判定模型（必需，用于判断任务是否完成）
+  --judge-model <model>  语义判定模型（用于判断任务是否完成）
+                        可通过环境变量 CURSOR_TASKS_JUDGE_MODEL 设置
   --retry <num>       最大重试次数（默认: 3）
   --timeout <minutes> 每次执行的超时时间，分钟（默认: 60）
   -h, --help          显示帮助
+
+环境变量:
+  脚本会优先从 .flow/.env 文件加载以下环境变量：
+  - OPENAI_API_KEY
+  - OPENAI_API_BASE
+  - CURSOR_TASKS_JUDGE_MODEL（用于语义判定模型，可通过 --judge-model 覆盖）
 
 说明:
   - 若提供系统提示词，则按 "系统提示词 + 两个换行 + 普通提示词" 合并；若未提供，则仅使用普通提示词。
@@ -996,6 +1066,9 @@ function pipeThroughAssistantFilter(stream, onEnd, onText) {
 }
 
 async function main() {
+  // 优先从 .flow/.env 加载环境变量
+  loadEnvFile();
+
   // 先解析参数，检查是否需要显示帮助
   const args = parseArgs(process.argv.slice(2));
   
@@ -1009,11 +1082,19 @@ async function main() {
   log("=".repeat(60));
 
   logStep(1, "解析命令行参数");
+  
+  // 如果未提供 --judge-model，尝试从环境变量读取
+  if (!args.judgeModel && process.env.CURSOR_TASKS_JUDGE_MODEL) {
+    args.judgeModel = process.env.CURSOR_TASKS_JUDGE_MODEL;
+    logStep(1, `从环境变量读取 judge-model: ${args.judgeModel}`);
+  }
+  
   logStep(1, "参数解析完成:", {
     model: args.model,
     hasPrompt: !!args.prompt,
     promptFilesCount: args.promptFiles.length,
     hasSystemPrompt: !!args.systemPrompt,
+    judgeModel: args.judgeModel || "(未设置)",
     positionalArgsCount: args.positional.length,
   });
 
@@ -1023,7 +1104,7 @@ async function main() {
   }
 
   if (!args.judgeModel) {
-    die(2, "错误: 必须提供 --judge-model 参数（用于语义判定）");
+    die(2, "错误: 必须提供 --judge-model 参数（用于语义判定），或设置环境变量 CURSOR_TASKS_JUDGE_MODEL");
   }
 
   const userPrompt = await buildUserPrompt(args.prompt, args.promptFiles);
