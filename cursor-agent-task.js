@@ -547,39 +547,41 @@ function findCursorAgentCommand() {
 /**
  * 调用 cursor-agent resume（用于继续执行任务）
  * @param {string} model - 模型名称
- * @param {string} prompt - 提示词（用于继续执行）
+ * @param {string} sessionId - session_id（必需）
+ * @param {string} prompt - 提示词（简短，例如"请继续"）
  * @param {number} timeoutMinutes - 超时时间(分钟)
- * @returns {Promise<Object>} AgentRunResult { exitCode, stdout, stderr, durationMs }
+ * @returns {Promise<Object>} AgentRunResult { exitCode, stdout, stderr, durationMs, sessionId }
  */
-function runCursorAgentResume(model, prompt, timeoutMinutes) {
+function runCursorAgentResume(model, sessionId, prompt, timeoutMinutes) {
   return new Promise((resolve, reject) => {
     const startTime = Date.now();
     const command = findCursorAgentCommand();
     const helpText = ensureCursorAgentInstalled();
     const streamPartial = hasStreamFlag(helpText);
 
-    // 构建命令参数: cursor-agent resume --model <model> --content <prompt> --print --output-format stream-json --force
-    // 提示词通过 --content 参数传递
+    // 构建命令参数: cursor-agent --model <model> --resume=<session_id> --print --output-format stream-json --force <prompt>
+    // 使用 --resume=<session_id> 参数，提示词作为位置参数传递
     const args = [
       "--model", model,
+      `--resume=${sessionId}`,
       "--print",
       "--output-format", "stream-json",
       "--force",
-      "resume",                    // resume 命令
-      prompt,         // 传递提示词
+      prompt,  // 简短的提示词作为位置参数
     ];
 
-    logStep(11, `调用 cursor-agent resume: cursor-agent --model ${model} --print --output-format stream-json --force resume "<提示词>"`);
+    logStep(11, `调用 cursor-agent resume: cursor-agent --model ${model} --resume=${sessionId} --print --output-format stream-json --force "${prompt}"`);
 
     const child = spawn(command, args, {
       cwd: process.cwd(),
-      stdio: ["ignore", "pipe", "pipe"],  // stdin 改为 ignore，因为通过 --content 传递
+      stdio: ["ignore", "pipe", "pipe"],  // stdin 不使用
       encoding: "utf8",
     });
 
     let stdout = "";
     let stderr = "";
     let isClosed = false;
+    let extractedSessionId = sessionId; // 初始化为传入的 session_id
 
     // 安全写入函数，检查流是否可写
     const safeWrite = (stream, text) => {
@@ -598,20 +600,43 @@ function runCursorAgentResume(model, prompt, timeoutMinutes) {
     // 检查是否支持流式输出
     if (streamPartial) {
       // 流式模式：使用 pipeThroughAssistantFilter 提取文本并显示
-      // 同时收集提取后的文本用于语义判定
+      // 同时收集提取后的文本和 session_id 用于语义判定
       pipeThroughAssistantFilter(child.stdout, () => {
         // 流式处理完成
       }, (extractedText) => {
         // 收集提取的文本
         stdout = extractedText;
+      }, (sessionIdFromStream) => {
+        // 收集提取的 session_id（可能更新）
+        extractedSessionId = sessionIdFromStream;
       });
     } else {
-      // 非流式模式：直接收集输出
+      // 非流式模式：直接收集输出，同时尝试提取 session_id
       child.stdout.on("data", (data) => {
         const text = data.toString();
         stdout += text;
         // 输出到 stderr，避免污染 stdout（JSON 输出）
         safeWrite(process.stderr, data);
+        
+        // 尝试从输出中提取 session_id
+        try {
+          const lines = text.split(/\r?\n/);
+          for (const line of lines) {
+            if (line.trim() && (line.trim().startsWith("{") || line.includes("session_id"))) {
+              try {
+                const obj = JSON.parse(line.trim());
+                const sid = extractSessionId(obj);
+                if (sid) {
+                  extractedSessionId = sid;
+                }
+              } catch (e) {
+                // 忽略解析错误
+              }
+            }
+          }
+        } catch (e) {
+          // 忽略提取错误
+        }
       });
     }
 
@@ -638,6 +663,7 @@ function runCursorAgentResume(model, prompt, timeoutMinutes) {
         stdout: stdout.trim(),
         stderr: stderr.trim(),
         durationMs,
+        sessionId: extractedSessionId, // 返回提取到的 session_id
       });
     });
 
@@ -653,6 +679,24 @@ function runCursorAgentResume(model, prompt, timeoutMinutes) {
 // 提示词应该作为位置参数传递，或通过标准输入传递
 
 /**
+ * 从 JSON 对象中提取 session_id
+ * @param {Object} jsonObj - JSON 对象
+ * @returns {string|null} session_id 或 null
+ */
+function extractSessionId(jsonObj) {
+  if (!jsonObj || typeof jsonObj !== "object") {
+    return null;
+  }
+  
+  // 优先查找 session_id 字段
+  if (typeof jsonObj.session_id === "string" && jsonObj.session_id) {
+    return jsonObj.session_id;
+  }
+  
+  return null;
+}
+
+/**
  * 从 JSON 对象中提取 assistant 文本内容
  * 支持 Cursor Agent 的实际格式：
  * {
@@ -665,7 +709,8 @@ function runCursorAgentResume(model, prompt, timeoutMinutes) {
  *         "text": "实际内容..."
  *       }
  *     ]
- *   }
+ *   },
+ *   "session_id": "9088cce5-ea3f-4694-8513-8ecbe5b5ad81"
  * }
  */
 function extractAssistantText(jsonObj) {
@@ -881,14 +926,16 @@ function extractAssistantText(jsonObj) {
  * @param {Stream} stream - 输入流
  * @param {Function} onEnd - 结束回调
  * @param {Function} [onText] - 文本收集回调，接收提取的完整文本
+ * @param {Function} [onSessionId] - session_id 收集回调，接收提取的 session_id
  */
-function pipeThroughAssistantFilter(stream, onEnd, onText) {
+function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId) {
   logStep(7, "初始化流式输出过滤器");
 
   let printedAny = false;
   let rawBuffer = ""; // 原始数据缓冲
   let chunkCount = 0;
   let lastOutput = ""; // 记录上次输出的完整内容，用于流式输出的增量提取
+  let sessionId = null; // 保存提取到的 session_id
 
   // 直接监听 data 事件，因为流式数据可能不是完整的行
   stream.on("data", (chunk) => {
@@ -939,6 +986,16 @@ function pipeThroughAssistantFilter(stream, onEnd, onText) {
         try {
           const obj = JSON.parse(jsonStr);
           const extracted = extractAssistantText(obj);
+          
+          // 提取 session_id
+          const extractedSessionId = extractSessionId(obj);
+          if (extractedSessionId && (!sessionId || extractedSessionId !== sessionId)) {
+            sessionId = extractedSessionId;
+            // 立即回调 session_id
+            if (onSessionId) {
+              onSessionId(sessionId);
+            }
+          }
 
           // 如果提取到内容，处理流式输出的增量更新
           if (extracted && extracted !== "null" && extracted.length > 0) {
@@ -1020,6 +1077,17 @@ function pipeThroughAssistantFilter(stream, onEnd, onText) {
           try {
             const obj = JSON.parse(jsonStr);
             const extracted = extractAssistantText(obj);
+            
+            // 提取 session_id
+            const extractedSessionId = extractSessionId(obj);
+            if (extractedSessionId && (!sessionId || extractedSessionId !== sessionId)) {
+              sessionId = extractedSessionId;
+              // 立即回调 session_id
+              if (onSessionId) {
+                onSessionId(sessionId);
+              }
+            }
+            
             if (extracted && extracted !== "null" && extracted.length > 0) {
               // 输出到 stderr，避免污染 stdout（JSON 输出）
               process.stderr.write(extracted, "utf8");
@@ -1041,10 +1109,15 @@ function pipeThroughAssistantFilter(stream, onEnd, onText) {
     if (onText && lastOutput) {
       onText(lastOutput);
     }
+    
+    // 最后回调 session_id（如果提取到了）
+    if (onSessionId && sessionId) {
+      onSessionId(sessionId);
+    }
 
     // 仅在DEBUG模式下输出统计信息
     if (process.env.DEBUG === "1") {
-      logStep(7, `流式处理完成: 接收 ${chunkCount} 个数据块`);
+      logStep(7, `流式处理完成: 接收 ${chunkCount} 个数据块, session_id: ${sessionId || "未找到"}`);
     }
 
     if (onEnd) {
@@ -1137,7 +1210,7 @@ async function main() {
  * @param {string} model - 模型名称
  * @param {string[]} positionalArgs - 透传参数
  * @param {number} timeoutMinutes - 超时时间（分钟）
- * @returns {Promise<Object>} { exitCode, stdout, stderr, durationMs }
+ * @returns {Promise<Object>} { exitCode, stdout, stderr, durationMs, sessionId }
  */
 function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
   return new Promise((resolve, reject) => {
@@ -1194,6 +1267,7 @@ function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
     let stdout = "";
     let stderr = "";
     let isClosed = false;
+    let extractedSessionId = null; // 保存提取到的 session_id
 
     const safeWrite = (stream, text) => {
       if (!isClosed && stream && !stream.destroyed && stream.writable) {
@@ -1220,12 +1294,15 @@ function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
 
   if (streamPartial) {
       // 流式模式：使用 pipeThroughAssistantFilter 提取文本并显示
-      // 同时收集提取后的文本用于语义判定
+      // 同时收集提取后的文本和 session_id 用于语义判定
     pipeThroughAssistantFilter(child.stdout, () => {
         // 流式处理完成
       }, (extractedText) => {
         // 收集提取的文本
         stdout = extractedText;
+    }, (sessionIdFromStream) => {
+        // 收集提取的 session_id
+        extractedSessionId = sessionIdFromStream;
     });
   } else {
     child.stdout.on("data", (d) => {
@@ -1233,6 +1310,26 @@ function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
         stdout += text;
         // 输出到 stderr，避免污染 stdout（JSON 输出）
         safeWrite(process.stderr, d);
+        
+        // 尝试从输出中提取 session_id
+        try {
+          const lines = text.split(/\r?\n/);
+          for (const line of lines) {
+            if (line.trim() && (line.trim().startsWith("{") || line.includes("session_id"))) {
+              try {
+                const obj = JSON.parse(line.trim());
+                const sid = extractSessionId(obj);
+                if (sid) {
+                  extractedSessionId = sid;
+                }
+              } catch (e) {
+                // 忽略解析错误
+              }
+            }
+          }
+        } catch (e) {
+          // 忽略提取错误
+        }
       });
     }
 
@@ -1252,6 +1349,7 @@ function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
         stdout: stdout.trim(),
         stderr: stderr.trim(),
         durationMs,
+        sessionId: extractedSessionId, // 返回提取到的 session_id
       });
     });
 
@@ -1280,6 +1378,7 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
   let finalStatus = "done";
   let errorMessage = null;
   let lastSemanticsResult = null; // 保存上次的语义判定结果
+  let sessionId = null; // 保存 session_id
 
   logStep(12, "开始任务执行循环");
   logStep(12, `最大重试次数: ${retry}, 每次超时: ${timeoutMinutes} 分钟`);
@@ -1294,15 +1393,33 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
       if (attempts === 1) {
         // 首次执行：使用 cursor-agent（非 resume）
         result = await runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes);
+        // 保存首次执行获取的 session_id
+        if (result.sessionId) {
+          sessionId = result.sessionId;
+          logStep(12, `提取到 session_id: ${sessionId}`);
+        }
       } else {
         // 后续执行：使用 cursor-agent resume
+        if (!sessionId) {
+          logStep(12, "错误: 未找到 session_id，无法继续执行");
+          errorMessage = "未找到 session_id，无法继续执行";
+          finalStatus = "error";
+          break;
+        }
+        
         // 根据上次语义判定结果决定提示词
         const resumePrompt = lastSemanticsResult && lastSemanticsResult.result === "auto"
           ? "按你的建议执行"
           : "请继续";
         
-        logStep(12, `使用 resume 模式继续执行: ${resumePrompt}`);
-        result = await runCursorAgentResume(model, resumePrompt, timeoutMinutes);
+        logStep(12, `使用 resume 模式继续执行: session_id=${sessionId}, prompt="${resumePrompt}"`);
+        result = await runCursorAgentResume(model, sessionId, resumePrompt, timeoutMinutes);
+        
+        // 更新 session_id（可能更新）
+        if (result.sessionId) {
+          sessionId = result.sessionId;
+          logStep(12, `更新 session_id: ${sessionId}`);
+        }
       }
 
       // 检查运行时错误
@@ -1334,6 +1451,7 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
         durationMs: result.durationMs,
         conclusion: semanticsResult.result === "done" ? "已完成" : 
                     semanticsResult.result === "auto" ? "建议继续" : "需要继续",
+        sessionId: result.sessionId || sessionId || null,
         notes: [
           `判定结果: ${semanticsResult.result}`,
           ...semanticsResult.reasons,
