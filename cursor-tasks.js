@@ -341,15 +341,23 @@ function validate_config(config) {
     }
     names.add(task.name);
 
-    if (!task.spec_file) {
-      throw new Error(`任务 ${task.name} 缺少 spec_file 字段`);
+    // prompt 和 spec_file 至少要有其中一个
+    const hasPrompt = task.prompt && typeof task.prompt === "string" && task.prompt.trim().length > 0;
+    const hasSpecFile = task.spec_file !== undefined && task.spec_file !== null;
+    
+    if (!hasPrompt && !hasSpecFile) {
+      throw new Error(`任务 ${task.name} 必须至少提供 prompt 或 spec_file 其中之一`);
     }
-    // spec_file 可以是字符串或字符串数组
-    if (typeof task.spec_file !== "string" && !Array.isArray(task.spec_file)) {
-      throw new Error(`任务 ${task.name} 的 spec_file 必须是字符串或字符串数组`);
-    }
-    if (Array.isArray(task.spec_file) && task.spec_file.length === 0) {
-      throw new Error(`任务 ${task.name} 的 spec_file 数组不能为空`);
+
+    // 如果提供了 spec_file，验证其格式
+    if (hasSpecFile) {
+      // spec_file 可以是字符串或字符串数组
+      if (typeof task.spec_file !== "string" && !Array.isArray(task.spec_file)) {
+        throw new Error(`任务 ${task.name} 的 spec_file 必须是字符串或字符串数组`);
+      }
+      if (Array.isArray(task.spec_file) && task.spec_file.length === 0) {
+        throw new Error(`任务 ${task.name} 的 spec_file 数组不能为空`);
+      }
     }
   }
 }
@@ -424,9 +432,10 @@ function find_agent_script() {
  * @param {string} model - 模型名称
  * @param {string[]} prompts - 提示词文件路径数组
  * @param {string|string[]} specFiles - spec 文件路径（字符串或字符串数组）
+ * @param {string} [taskPrompt] - 任务的 prompt 属性（可选）
  * @returns {string[]} 参数数组
  */
-function build_agent_args(model, prompts, specFiles) {
+function build_agent_args(model, prompts, specFiles, taskPrompt) {
   const args = ["-m", model];
 
   // 先添加 prompts 文件(作为最优先的 -f 参数)
@@ -445,16 +454,24 @@ function build_agent_args(model, prompts, specFiles) {
     logWarning(`prompts 数组为空或未提供`);
   }
 
-  // 添加 spec_file(s) - 支持单个文件或文件数组
-  const specFileArray = Array.isArray(specFiles) ? specFiles : [specFiles];
-  logInfo(`开始处理 ${specFileArray.length} 个 spec 文件`);
-  for (const specFile of specFileArray) {
-    const resolvedSpec = path.resolve(specFile);
-    if (!fs.existsSync(resolvedSpec)) {
-      throw new Error(`spec_file 不存在: ${specFile}`);
+  // 添加 spec_file(s) - 支持单个文件或文件数组（如果提供）
+  if (specFiles) {
+    const specFileArray = Array.isArray(specFiles) ? specFiles : [specFiles];
+    logInfo(`开始处理 ${specFileArray.length} 个 spec 文件`);
+    for (const specFile of specFileArray) {
+      const resolvedSpec = path.resolve(specFile);
+      if (!fs.existsSync(resolvedSpec)) {
+        throw new Error(`spec_file 不存在: ${specFile}`);
+      }
+      args.push("-f", resolvedSpec);
+      logSuccess(`添加 spec 文件: ${colorize(specFile, "cyan")}`);
     }
-    args.push("-f", resolvedSpec);
-    logSuccess(`添加 spec 文件: ${colorize(specFile, "cyan")}`);
+  }
+
+  // 最后添加任务的 prompt 属性（如果存在）- 作为 -p 参数
+  if (taskPrompt && taskPrompt.trim()) {
+    args.push("-p", taskPrompt.trim());
+    logSuccess(`添加任务 prompt: ${colorize(taskPrompt.substring(0, 50) + (taskPrompt.length > 50 ? "..." : ""), "cyan")}`);
   }
 
   logInfo(`构建的 agent 参数: ${colorize(args.join(" "), "dim")}`);
@@ -987,10 +1004,12 @@ async function write_task_report(
   // 计算相对路径(相对于当前工作目录)
   const reportRelativePath = path.relative(process.cwd(), reportPath);
 
-  // 格式化 spec_file 显示（支持单个文件或文件数组）
-  const specFileDisplay = Array.isArray(task.spec_file)
-    ? task.spec_file.join(", ")
-    : task.spec_file;
+  // 格式化 spec_file 显示（支持单个文件或文件数组，如果不存在则显示"无"）
+  const specFileDisplay = task.spec_file
+    ? (Array.isArray(task.spec_file)
+        ? task.spec_file.join(", ")
+        : task.spec_file)
+    : "无";
 
   const reportContent = `# 任务执行报告
 
@@ -1163,12 +1182,14 @@ async function execute_task(task, globalConfig, prompts) {
   let detailedError = null; // 详细错误信息(用于报告)
 
   try {
-    // 检查 spec_file(s) 是否存在（支持单个文件或文件数组）
-    const specFileArray = Array.isArray(task.spec_file) ? task.spec_file : [task.spec_file];
-    for (const specFile of specFileArray) {
-      const specPath = path.resolve(specFile);
-      if (!fs.existsSync(specPath)) {
-        throw new Error(`spec_file 不存在: ${specFile}`);
+    // 检查 spec_file(s) 是否存在（如果提供了 spec_file，支持单个文件或文件数组）
+    if (task.spec_file) {
+      const specFileArray = Array.isArray(task.spec_file) ? task.spec_file : [task.spec_file];
+      for (const specFile of specFileArray) {
+        const specPath = path.resolve(specFile);
+        if (!fs.existsSync(specPath)) {
+          throw new Error(`spec_file 不存在: ${specFile}`);
+        }
       }
     }
 
@@ -1186,7 +1207,8 @@ async function execute_task(task, globalConfig, prompts) {
     let agentArgs = build_agent_args(
       globalConfig.model,
       prompts,
-      task.spec_file
+      task.spec_file,
+      task.prompt
     );
 
     // 主循环: 执行 -> 判定 -> 继续或完成
@@ -1308,7 +1330,9 @@ async function execute_task(task, globalConfig, prompts) {
   // 生成报告摘要
   const summary = {
     taskName: task.name,
-    specFile: Array.isArray(task.spec_file) ? task.spec_file.join(", ") : task.spec_file,
+    specFile: task.spec_file
+      ? (Array.isArray(task.spec_file) ? task.spec_file.join(", ") : task.spec_file)
+      : "无",
     startedAt,
     endedAt,
     attempts,

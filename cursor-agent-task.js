@@ -111,18 +111,19 @@ async function closeMCPBrowser() {
 
 function printUsage() {
   const text = `用法:
-  cursor-agent-task.js [-s "系统提示词"] [-p "提示词" | -f 提示词文件(可多次)] [-- 其他参数]
+  cursor-agent-task.js [-s "系统提示词"] [-p "提示词"] [-f 提示词文件(可多次)] [-- 其他参数]
 
 参数:
   -s, --system   系统提示词（可选）
-  -p, --prompt   普通提示词（与 -f 二选一）
-  -f, --file     从文件读取提示词（可多次；与 -p 二选一；传 - 表示从 stdin 读取）
+  -p, --prompt   普通提示词（可选，可与 -f 同时使用）
+  -f, --file     从文件读取提示词（可多次；可与 -p 同时使用；传 - 表示从 stdin 读取）
   -m, --model    指定 cursor-agent 模型名称（默认: auto）
   -h, --help     显示帮助
 
 说明:
-  - 若提供系统提示词，则按 “系统提示词 + 两个换行 + 普通提示词” 合并；若未提供，则仅使用普通提示词。
+  - 若提供系统提示词，则按 "系统提示词 + 两个换行 + 普通提示词" 合并；若未提供，则仅使用普通提示词。
   - 多个 --file 时，按传入顺序拼接内容，文件之间以两个换行分隔。
+  - 若同时提供 -p 和 -f，合并顺序为：先合并所有 -f 文件内容，最后追加 -p 内容（之间用两个换行分隔）。
   - 脚本将尝试自动探测 cursor-agent 的可用调用方式:
       1) cursor-agent --prompt "..."
       2) cursor-agent run --prompt "..."
@@ -219,51 +220,67 @@ async function readAll(stream) {
 }
 
 async function buildUserPrompt(prompt, promptFiles) {
-  if (promptFiles.length === 0) {
-    logStep(2, "使用直接提示词，长度:", prompt.length, "字符");
-    return prompt;
-  }
-  logStep(2, `开始读取 ${promptFiles.length} 个文件`);
-  let stdinUsed = false;
-  let first = true;
   let out = "";
-  for (let i = 0; i < promptFiles.length; i++) {
-    const f = promptFiles[i];
-    let content = "";
-    if (f === "-") {
-      if (stdinUsed) {
-        die(2, "错误: 标准输入 (-) 只能使用一次");
+  let hasContent = false;
+
+  // 第一步：处理所有文件（-f 参数）
+  if (promptFiles.length > 0) {
+    logStep(2, `开始读取 ${promptFiles.length} 个文件`);
+    let stdinUsed = false;
+    let first = true;
+    for (let i = 0; i < promptFiles.length; i++) {
+      const f = promptFiles[i];
+      let content = "";
+      if (f === "-") {
+        if (stdinUsed) {
+          die(2, "错误: 标准输入 (-) 只能使用一次");
+        }
+        logStep(2, `文件 ${i + 1}/${promptFiles.length}: 从标准输入读取`);
+        stdinUsed = true;
+        content = await readAll(process.stdin);
+        logStep(
+          2,
+          `文件 ${i + 1}/${promptFiles.length}: 从标准输入读取完成，长度:`,
+          content.length,
+          "字符"
+        );
+      } else {
+        if (!fs.existsSync(f)) {
+          die(2, `错误: 文件不存在: ${f}`);
+        }
+        logStep(2, `文件 ${i + 1}/${promptFiles.length}: 读取文件 ${f}`);
+        content = await fsp.readFile(f, "utf8");
+        logStep(
+          2,
+          `文件 ${i + 1}/${promptFiles.length}: 读取完成，长度:`,
+          content.length,
+          "字符"
+        );
       }
-      logStep(2, `文件 ${i + 1}/${promptFiles.length}: 从标准输入读取`);
-      stdinUsed = true;
-      content = await readAll(process.stdin);
-      logStep(
-        2,
-        `文件 ${i + 1}/${promptFiles.length}: 从标准输入读取完成，长度:`,
-        content.length,
-        "字符"
-      );
-    } else {
-      if (!fs.existsSync(f)) {
-        die(2, `错误: 文件不存在: ${f}`);
+      if (first) {
+        out += content;
+        first = false;
+      } else {
+        out += "\n\n" + content;
       }
-      logStep(2, `文件 ${i + 1}/${promptFiles.length}: 读取文件 ${f}`);
-      content = await fsp.readFile(f, "utf8");
-      logStep(
-        2,
-        `文件 ${i + 1}/${promptFiles.length}: 读取完成，长度:`,
-        content.length,
-        "字符"
-      );
+      hasContent = true;
     }
-    if (first) {
-      out += content;
-      first = false;
-    } else {
-      out += "\n\n" + content;
-    }
+    logStep(2, "所有文件读取完成");
   }
-  logStep(2, "所有文件读取完成，合并后总长度:", out.length, "字符");
+
+  // 第二步：追加 prompt（-p 参数）
+  if (prompt) {
+    if (hasContent) {
+      out += "\n\n" + prompt;
+      logStep(2, "已追加直接提示词，合并后总长度:", out.length, "字符");
+    } else {
+      out = prompt;
+      logStep(2, "使用直接提示词，长度:", prompt.length, "字符");
+    }
+  } else {
+    logStep(2, "合并后总长度:", out.length, "字符");
+  }
+
   return out;
 }
 
@@ -721,9 +738,6 @@ async function main() {
     positionalArgsCount: args.positional.length,
   });
 
-  if (args.prompt && args.promptFiles.length > 0) {
-    die(2, "错误: --prompt 与 --file 只能二选一");
-  }
   if (!args.prompt && args.promptFiles.length === 0) {
     die(2, "错误: 必须提供 --prompt 或 --file 其中之一");
   }

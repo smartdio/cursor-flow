@@ -8,6 +8,7 @@
       "name": "示例任务1",
       "description": "这是一个示例任务，用于演示 task.json 的格式",
       "spec_file": "doc/specs/example-task-1.md",
+      "prompt": "生成用于演示 task.json的格式",
       "status": "pending"
     },
     {
@@ -17,6 +18,12 @@
         "doc/specs/example-task-2-part1.md",
         "doc/specs/example-task-2-part2.md"
       ],
+      "status": "pending"
+    },
+    {
+      "name": "示例任务3",
+      "description": "演示仅使用 prompt 而不使用 spec_file 的任务",
+      "prompt": "请帮我生成一个简单的 Hello World 程序",
       "status": "pending"
     }
   ]
