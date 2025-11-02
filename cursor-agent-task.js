@@ -558,22 +558,22 @@ function runCursorAgentResume(model, prompt, timeoutMinutes) {
     const helpText = ensureCursorAgentInstalled();
     const streamPartial = hasStreamFlag(helpText);
 
-    // 构建命令参数: cursor-agent resume --model <model> --print --output-format stream-json --force
-    // 注意: resume 命令不接受位置参数，提示词必须通过 stdin 传递
+    // 构建命令参数: cursor-agent resume --model <model> --content <prompt> --print --output-format stream-json --force
+    // 提示词通过 --content 参数传递
     const args = [
       "resume",                    // resume 命令
       "--model", model,
+      "--content", prompt,         // 通过 --content 传递提示词
       "--print",
       "--output-format", "stream-json",
       "--force",
     ];
 
-    // cursor-agent resume 命令不接受位置参数，始终通过 stdin 传递 prompt
-    logStep(11, `调用 cursor-agent resume: cursor-agent ${args.join(" ")} (提示词通过 stdin 传递)`);
+    logStep(11, `调用 cursor-agent resume: cursor-agent resume --model ${model} --content "<提示词>" --print --output-format stream-json --force`);
 
     const child = spawn(command, args, {
       cwd: process.cwd(),
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],  // stdin 改为 ignore，因为通过 --content 传递
       encoding: "utf8",
     });
 
@@ -594,11 +594,6 @@ function runCursorAgentResume(model, prompt, timeoutMinutes) {
 
     if (child.stdout) child.stdout.setEncoding("utf8");
     if (child.stderr) child.stderr.setEncoding("utf8");
-
-    // 处理 stdin：始终通过 stdin 传递提示词（resume 命令不接受位置参数）
-    child.stdin.write(prompt + "\n", "utf8");
-    child.stdin.end();
-    logStep(11, "提示词已通过 stdin 传递");
 
     // 检查是否支持流式输出
     if (streamPartial) {
