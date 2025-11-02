@@ -1236,7 +1236,18 @@ async function run_all_tasks(globalConfig) {
 
 async function main() {
   try {
-    const config = parse_args(process.argv.slice(2));
+    // 先解析参数，检查是否是 init 或 help 命令（这些命令不需要加载环境变量）
+    const argv = process.argv.slice(2);
+    const isInit = argv.includes("init");
+    const isHelp = argv.includes("-h") || argv.includes("--help");
+    
+    // 如果不是 init 或 help 命令，先加载环境变量
+    if (!isInit && !isHelp) {
+      await load_cursor_env();
+    }
+
+    // 解析完整参数（此时环境变量已加载）
+    const config = parse_args(argv);
 
     // 如果指定了帮助选项,显示帮助并退出
     if (config.help) {
@@ -1249,9 +1260,6 @@ async function main() {
       await init_flow_directory();
       process.exit(0);
     }
-
-    // 加载 .flow/.env 文件中的环境变量（在执行任务前）
-    await load_cursor_env();
 
     // 如果指定了 --reset 参数,执行重置操作
     if (config.reset) {
