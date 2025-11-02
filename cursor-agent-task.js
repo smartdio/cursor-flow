@@ -561,15 +561,15 @@ function runCursorAgentResume(model, prompt, timeoutMinutes) {
     // 构建命令参数: cursor-agent resume --model <model> --content <prompt> --print --output-format stream-json --force
     // 提示词通过 --content 参数传递
     const args = [
-      "resume",                    // resume 命令
       "--model", model,
-      "--content", prompt,         // 通过 --content 传递提示词
       "--print",
       "--output-format", "stream-json",
       "--force",
+      "resume",                    // resume 命令
+      prompt,         // 传递提示词
     ];
 
-    logStep(11, `调用 cursor-agent resume: cursor-agent resume --model ${model} --content "<提示词>" --print --output-format stream-json --force`);
+    logStep(11, `调用 cursor-agent resume: cursor-agent --model ${model} --print --output-format stream-json --force resume "<提示词>"`);
 
     const child = spawn(command, args, {
       cwd: process.cwd(),
