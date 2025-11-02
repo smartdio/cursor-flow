@@ -1005,63 +1005,99 @@ async function execute_task(task, globalConfig, prompts) {
 
     // 解析返回的 JSON 结果
     // 注意：stdout 中可能包含助手输出的文本，需要提取 JSON 部分
+    let executionResult = null;
+    let jsonParseSuccess = false;
+    
     try {
       let jsonText = result.stdout.trim();
       
-      // 尝试找到 JSON 对象（从最后一个 { 开始，匹配到对应的 }）
-      // 这样可以忽略 JSON 之前的任何文本
-      const lastBraceIndex = jsonText.lastIndexOf("{");
-      if (lastBraceIndex >= 0) {
-        // 从最后一个 { 开始，尝试找到匹配的 }
-        let braceCount = 0;
-        let jsonEndIndex = -1;
-        for (let i = lastBraceIndex; i < jsonText.length; i++) {
-          if (jsonText[i] === "{") braceCount++;
-          if (jsonText[i] === "}") braceCount--;
-          if (braceCount === 0) {
-            jsonEndIndex = i + 1;
-            break;
+      // 方法1: 尝试直接解析整个 stdout（可能 stdout 就是纯 JSON）
+      try {
+        executionResult = JSON.parse(jsonText);
+        jsonParseSuccess = true;
+        logInfo(`成功解析完整 stdout 为 JSON`);
+      } catch (e) {
+        // 方法2: 尝试找到 JSON 对象（从最后一个 { 开始，匹配到对应的 }）
+        const lastBraceIndex = jsonText.lastIndexOf("{");
+        if (lastBraceIndex >= 0) {
+          // 从最后一个 { 开始，尝试找到匹配的 }
+          let braceCount = 0;
+          let jsonEndIndex = -1;
+          for (let i = lastBraceIndex; i < jsonText.length; i++) {
+            if (jsonText[i] === "{") braceCount++;
+            if (jsonText[i] === "}") braceCount--;
+            if (braceCount === 0) {
+              jsonEndIndex = i + 1;
+              break;
+            }
           }
-        }
-        if (jsonEndIndex > lastBraceIndex) {
-          jsonText = jsonText.substring(lastBraceIndex, jsonEndIndex);
+          if (jsonEndIndex > lastBraceIndex) {
+            const extractedJson = jsonText.substring(lastBraceIndex, jsonEndIndex);
+            executionResult = JSON.parse(extractedJson);
+            jsonParseSuccess = true;
+            logInfo(`成功从 stdout 中提取并解析 JSON`);
+          } else {
+            throw new Error("无法找到匹配的 JSON 结束位置");
+          }
+        } else {
+          throw new Error("stdout 中未找到 JSON 对象");
         }
       }
-      
-      const executionResult = JSON.parse(jsonText);
+    } catch (parseErr) {
+      // JSON 解析失败，记录但不立即判断为错误
+      logWarning(`JSON 解析失败: ${parseErr.message}`);
+      logInfo(`原始输出长度: ${result.stdout.length}，退出码: ${result.exitCode}`);
+      if (result.stdout.length > 0) {
+        const preview = result.stdout.substring(Math.max(0, result.stdout.length - 500));
+        logInfo(`输出末尾500字符预览:\n${preview}`);
+      }
+    }
+
+    // 如果 JSON 解析成功，完全基于 JSON 结果判断
+    if (jsonParseSuccess && executionResult) {
       attempts = executionResult.attempts || 0;
       executions = executionResult.executions || [];
       
-      // 根据 JSON 中的 success 字段判断，而不是退出码
-      if (executionResult.success === true) {
+      // 调试信息：输出关键字段
+      logInfo(`解析结果: success=${executionResult.success} (type: ${typeof executionResult.success}), finalStatus=${executionResult.finalStatus}`);
+      
+      // 简化判断逻辑：优先检查 success 字段，其次检查 finalStatus
+      // 注意：success 可能是布尔值 true，finalStatus 可能是字符串 "done"
+      const isSuccess = executionResult.success === true || executionResult.success === "true" || String(executionResult.success).toLowerCase() === "true";
+      const isDone = executionResult.finalStatus === "done" || executionResult.finalStatus === "完成";
+      
+      if (isSuccess || isDone) {
         logTaskStatus(task.name, "success", "任务已完成");
         finalStatus = "成功";
-        // 确保成功时清除错误信息
         errorMessage = null;
         detailedError = null;
-      } else if (executionResult.finalStatus === "partial") {
+      } else if (executionResult.finalStatus === "partial" || executionResult.finalStatus === "部分完成") {
         logWarning(`达到重试上限(${globalConfig.retry}),标记为部分完成`);
         finalStatus = "部分完成";
-        errorMessage = null; // 部分完成不算错误
+        errorMessage = null;
       } else {
-        logTaskStatus(task.name, "error", "任务执行失败");
+        // success !== true 且 finalStatus 不是 done/partial，视为失败
+        logTaskStatus(task.name, "error", `任务执行失败 (success=${executionResult.success}, finalStatus=${executionResult.finalStatus})`);
         finalStatus = "失败";
         errorMessage = executionResult.errorMessage || "任务执行失败";
         detailedError = executionResult.errorMessage || "任务执行失败";
       }
-    } catch (parseErr) {
-      // 如果 JSON 解析失败，再检查是否是运行时错误
-      if (is_runtime_error(result.exitCode, result.stderr)) {
-        logTaskStatus(task.name, "error", "cursor-agent-task 执行失败");
+    } else {
+      // JSON 解析失败的情况
+      logWarning(`JSON 解析失败或 executionResult 为空: jsonParseSuccess=${jsonParseSuccess}, executionResult=${executionResult ? "存在" : "null"}`);
+      // JSON 解析失败，使用退出码和 stderr 判断
+      if (result.exitCode !== 0) {
+        logTaskStatus(task.name, "error", `cursor-agent-task 执行失败（退出码: ${result.exitCode}）`);
         const fullError = `运行时错误: 退出码 ${result.exitCode}\n${result.stderr || "无错误输出"}\n\n标准输出:\n${result.stdout}`;
         detailedError = fullError;
         errorMessage = extract_short_error_message(fullError);
         finalStatus = "失败";
       } else {
-        logTaskStatus(task.name, "error", `解析执行结果失败: ${parseErr.message}`);
-        logError(`原始输出前500字符: ${result.stdout.substring(0, 500)}`);
-        errorMessage = `解析执行结果失败: ${parseErr.message}`;
-        detailedError = `解析执行结果失败: ${parseErr.message}\n\n原始输出:\n${result.stdout}`;
+        // 退出码为 0 但 JSON 解析失败，可能是输出格式问题
+        logTaskStatus(task.name, "error", "无法解析执行结果");
+        const fullError = `JSON 解析失败: 无法从输出中提取有效的 JSON 结果\n\n标准输出:\n${result.stdout}\n\n错误输出:\n${result.stderr || "无"}`;
+        detailedError = fullError;
+        errorMessage = "无法解析执行结果";
         finalStatus = "失败";
       }
     }
