@@ -488,7 +488,8 @@ function runCursorAgentResume(model, prompt, timeoutMinutes) {
     const helpText = ensureCursorAgentInstalled();
     const streamPartial = hasStreamFlag(helpText);
 
-    // 构建命令参数: cursor-agent resume --model <model> --print --output-format stream-json --force [prompt]
+    // 构建命令参数: cursor-agent resume --model <model> --print --output-format stream-json --force
+    // 注意: resume 命令不接受位置参数，提示词必须通过 stdin 传递
     const args = [
       "resume",                    // resume 命令
       "--model", model,
@@ -497,21 +498,8 @@ function runCursorAgentResume(model, prompt, timeoutMinutes) {
       "--force",
     ];
 
-    // 检查 prompt 是否适合作为命令行参数传递
-    const hasNewlines = prompt.includes("\n") || prompt.includes("\r");
-    const isTooLong = prompt.length > 50000;
-    const needsStdinMode = hasNewlines || isTooLong;
-    let useStdinFallback = false;
-
-    if (needsStdinMode) {
-      // 如果 prompt 包含换行符或过长，使用标准输入传递
-      useStdinFallback = true;
-    } else {
-      // 直接作为位置参数传递
-      args.push(prompt);
-    }
-
-    logStep(11, `调用 cursor-agent resume: cursor-agent ${args.join(" ")}${useStdinFallback ? " (提示词通过 stdin 传递)" : ""}`);
+    // cursor-agent resume 命令不接受位置参数，始终通过 stdin 传递 prompt
+    logStep(11, `调用 cursor-agent resume: cursor-agent ${args.join(" ")} (提示词通过 stdin 传递)`);
 
     const child = spawn(command, args, {
       cwd: process.cwd(),
@@ -537,14 +525,10 @@ function runCursorAgentResume(model, prompt, timeoutMinutes) {
     if (child.stdout) child.stdout.setEncoding("utf8");
     if (child.stderr) child.stderr.setEncoding("utf8");
 
-    // 处理 stdin：如果需要通过 stdin 传递提示词
-    if (useStdinFallback) {
-      child.stdin.write(prompt + "\n", "utf8");
-      child.stdin.end();
-      logStep(11, "提示词已通过 stdin 传递");
-    } else {
-      child.stdin.end();
-    }
+    // 处理 stdin：始终通过 stdin 传递提示词（resume 命令不接受位置参数）
+    child.stdin.write(prompt + "\n", "utf8");
+    child.stdin.end();
+    logStep(11, "提示词已通过 stdin 传递");
 
     // 检查是否支持流式输出
     if (streamPartial) {
