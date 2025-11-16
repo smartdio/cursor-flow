@@ -239,6 +239,7 @@ function print_help() {
   --retry <num>             重试次数（默认: 3）
   --timeout <minutes>       超时时间（分钟，默认: 30）
   --reset                   重置所有任务状态为 pending
+  --reset-error             重置所有 error 状态的任务为 pending
   -h, --help                显示帮助信息
 
 环境变量:
@@ -258,6 +259,9 @@ function print_help() {
 
   # 重置任务状态
   cursor-tasks --task-file .flow/task.json --reset
+
+  # 重置 error 状态的任务
+  cursor-tasks --task-file .flow/task.json --reset-error
 
   # 显示帮助
   cursor-tasks --help
@@ -280,6 +284,7 @@ function parse_args(argv) {
     timeoutMinutes: 30,
     reportDir: ".flow/tasks/report",
     reset: false, // 是否重置任务状态
+    resetError: false, // 是否重置 error 状态的任务
     init: false, // 是否初始化 .flow 目录
     help: false, // 是否显示帮助
   };
@@ -300,13 +305,15 @@ function parse_args(argv) {
       config.timeoutMinutes = parseInt(argv[++i], 10);
     } else if (arg === "--reset") {
       config.reset = true;
+    } else if (arg === "--reset-error") {
+      config.resetError = true;
     } else if (arg === "-h" || arg === "--help") {
       config.help = true;
     }
   }
 
-  // 如果执行任务（非 reset、init 和 help），验证判定模型是否已指定
-  if (!config.reset && !config.init && !config.help && !config.judgeModel) {
+  // 如果执行任务（非 reset、reset-error、init 和 help），验证判定模型是否已指定
+  if (!config.reset && !config.resetError && !config.init && !config.help && !config.judgeModel) {
     throw new Error("判定模型未指定。请使用 --judge-model 参数或设置 CURSOR_TASKS_JUDGE_MODEL 环境变量");
   }
 
@@ -939,6 +946,49 @@ async function reset_tasks(globalConfig) {
   printSeparator();
 }
 
+/**
+ * 重置 error 状态的任务为 pending
+ * @param {Object} globalConfig - 全局配置
+ * @returns {Promise<void>}
+ */
+async function reset_error_tasks(globalConfig) {
+  printHeader("重置 error 状态任务", icons.gear);
+
+  // 加载任务文件
+  logInfo(`加载任务文件: ${colorize(globalConfig.taskFile, "cyan")}`);
+  const taskFile = await load_task_file(globalConfig.taskFile);
+
+  // 验证配置
+  validate_config(taskFile);
+
+  let resetCount = 0;
+
+  // 只重置 error 状态的任务为 pending
+  console.error("");
+  for (const task of taskFile.tasks) {
+    if (task.status === "error") {
+      task.status = "pending";
+      // 清除错误信息和报告路径
+      delete task.error_message;
+      delete task.report;
+      resetCount++;
+      const oldStatusText = colorize("error", "red");
+      const newStatusText = colorize("pending", "green");
+      logTaskStatus(task.name, "pending", `${oldStatusText} ${colorize("→", "gray")} ${newStatusText}`);
+    } else {
+      logTaskStatus(task.name, task.status || "pending", `状态为 ${task.status || "pending"},跳过`);
+    }
+  }
+
+  // 保存任务文件
+  await save_task_file(globalConfig.taskFile, taskFile);
+
+  console.error("");
+  printSeparator();
+  logSuccess(`重置完成: 共重置 ${colorize(resetCount, "bright")} 个 error 状态的任务`);
+  printSeparator();
+}
+
 // ============================================================================
 // 8. 任务执行编排
 // ============================================================================
@@ -1270,13 +1320,15 @@ async function run_all_tasks(globalConfig) {
 
 async function main() {
   try {
-    // 先解析参数，检查是否是 init 或 help 命令（这些命令不需要加载环境变量）
+    // 先解析参数，检查是否是 init、help、reset 或 reset-error 命令（这些命令不需要加载环境变量）
     const argv = process.argv.slice(2);
     const isInit = argv.includes("init");
     const isHelp = argv.includes("-h") || argv.includes("--help");
+    const isReset = argv.includes("--reset");
+    const isResetError = argv.includes("--reset-error");
     
-    // 如果不是 init 或 help 命令，先加载环境变量
-    if (!isInit && !isHelp) {
+    // 如果不是 init、help、reset 或 reset-error 命令，先加载环境变量
+    if (!isInit && !isHelp && !isReset && !isResetError) {
       await load_cursor_env();
     }
 
@@ -1298,6 +1350,9 @@ async function main() {
     // 如果指定了 --reset 参数,执行重置操作
     if (config.reset) {
       await reset_tasks(config);
+    } else if (config.resetError) {
+      // 如果指定了 --reset-error 参数,执行重置 error 任务操作
+      await reset_error_tasks(config);
     } else {
       // 否则执行任务
       await run_all_tasks(config);
@@ -1330,6 +1385,7 @@ module.exports = {
   save_task_file,
   init_flow_directory,
   reset_tasks,
+  reset_error_tasks,
   execute_task,
   run_all_tasks,
 };
