@@ -38,6 +38,78 @@ function detectTerminalCapabilities() {
 
 const TERMINAL = detectTerminalCapabilities();
 
+// Agent 输出框的宽度（在整个输出过程中保持一致）
+let agentOutputBoxWidth = null;
+
+/**
+ * 获取终端宽度
+ * @returns {number} 终端宽度（列数），如果无法获取则返回默认值
+ */
+function getTerminalWidth() {
+  // 优先使用 stderr 的列数（因为我们的输出都到 stderr）
+  if (process.stderr.isTTY && process.stderr.columns) {
+    return process.stderr.columns;
+  }
+  // 其次使用 stdout 的列数
+  if (process.stdout.isTTY && process.stdout.columns) {
+    return process.stdout.columns;
+  }
+  // 使用环境变量 COLUMNS
+  if (process.env.COLUMNS) {
+    const cols = parseInt(process.env.COLUMNS, 10);
+    if (!isNaN(cols) && cols > 0) {
+      return cols;
+    }
+  }
+  // 默认宽度
+  return 80;
+}
+
+/**
+ * 计算合适的输出宽度
+ * @param {number} minWidth - 最小宽度（默认：60）
+ * @param {number} contentLength - 内容长度（可选）
+ * @param {number} padding - 额外边距（默认：4）
+ * @returns {number} 计算后的宽度
+ */
+function calculateOutputWidth(minWidth = 60, contentLength = 0, padding = 4) {
+  const terminalWidth = getTerminalWidth();
+  // 最大宽度：终端宽度 - 2（留出边距）
+  const maxWidth = Math.max(minWidth, terminalWidth - 2);
+  // 如果内容长度 + padding 小于最小宽度，使用最小宽度
+  // 如果内容长度 + padding 大于最大宽度，使用最大宽度
+  // 否则使用内容长度 + padding
+  const calculatedWidth = Math.max(minWidth, Math.min(maxWidth, contentLength + padding));
+  return calculatedWidth;
+}
+
+/**
+ * 获取或计算 Agent 输出框的宽度
+ * @param {string} title - 标题（可选，用于计算初始宽度）
+ * @returns {number} Agent 输出框宽度
+ */
+function getAgentOutputBoxWidth(title = null) {
+  // 如果已经设置过宽度，直接返回（保持一致性）
+  if (agentOutputBoxWidth !== null) {
+    return agentOutputBoxWidth;
+  }
+  
+  // 计算初始宽度
+  const terminalWidth = getTerminalWidth();
+  const minWidth = 60;
+  const maxWidth = Math.max(minWidth, terminalWidth - 2);
+  
+  if (title) {
+    const contentLength = title.length;
+    agentOutputBoxWidth = calculateOutputWidth(minWidth, contentLength, 4);
+  } else {
+    // 如果没有标题，使用终端宽度的 90%（但至少 60，最多不超过终端宽度-2）
+    agentOutputBoxWidth = Math.max(minWidth, Math.min(maxWidth, Math.floor(terminalWidth * 0.9)));
+  }
+  
+  return agentOutputBoxWidth;
+}
+
 /**
  * ANSI 颜色代码
  */
@@ -101,6 +173,10 @@ const symbols = {
   arrowRightSmall: TERMINAL.supportsUnicode ? "▸" : "->",
   arrow: TERMINAL.supportsUnicode ? "→" : "->",
   
+  // Agent 输出标签
+  userLabel: TERMINAL.supportsUnicode ? "📝" : "[用户]",
+  agentLabel: TERMINAL.supportsUnicode ? "🤖" : "[Agent]",
+  
   // 边框字符
   box: {
     topLeft: TERMINAL.supportsUnicode ? "┌" : "+",
@@ -154,6 +230,77 @@ function drawAgentBoxLine(text, width) {
   const textLen = text.length;
   const padding = Math.max(0, width - textLen - 2);
   return symbols.agentBox.vertical + " " + text + " ".repeat(padding) + " " + symbols.agentBox.vertical;
+}
+
+/**
+ * 计算字符串的实际显示长度（去除 ANSI 颜色代码）
+ * @param {string} str - 可能包含 ANSI 代码的字符串
+ * @returns {number} 实际显示长度
+ */
+function getDisplayLength(str) {
+  // 移除 ANSI 转义序列（\x1b[...m 格式）
+  const ansiRegex = /\x1b\[[0-9;]*m/g;
+  return str.replace(ansiRegex, "").length;
+}
+
+/**
+ * 将文本按最大宽度换行（考虑边框前缀）
+ * @param {string} text - 要换行的文本
+ * @param {number} maxWidth - 最大宽度（包括边框前缀）
+ * @param {number} prefixLength - 前缀长度（包括边框和标签，实际显示长度）
+ * @returns {string[]} 换行后的文本数组
+ */
+function wrapTextForAgentOutput(text, maxWidth, prefixLength) {
+  const contentWidth = maxWidth - prefixLength;
+  if (contentWidth <= 0) {
+    return [text];
+  }
+  
+  const lines = [];
+  const words = text.split(/(\s+)/);
+  let currentLine = "";
+  
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    const testLine = currentLine + word;
+    
+    // 如果当前行加上新词超过宽度，或者遇到换行符
+    if (testLine.length > contentWidth || word.includes("\n")) {
+      if (currentLine) {
+        lines.push(currentLine);
+        currentLine = "";
+      }
+      
+      // 处理换行符
+      if (word.includes("\n")) {
+        const parts = word.split(/\n/);
+        for (let j = 0; j < parts.length - 1; j++) {
+          if (parts[j]) {
+            lines.push(parts[j]);
+          }
+        }
+        currentLine = parts[parts.length - 1];
+      } else if (word.length > contentWidth) {
+        // 单词本身超过宽度，强制分割
+        let remaining = word;
+        while (remaining.length > contentWidth) {
+          lines.push(remaining.substring(0, contentWidth));
+          remaining = remaining.substring(contentWidth);
+        }
+        currentLine = remaining;
+      } else {
+        currentLine = word;
+      }
+    } else {
+      currentLine = testLine;
+    }
+  }
+  
+  if (currentLine) {
+    lines.push(currentLine);
+  }
+  
+  return lines.length > 0 ? lines : [text];
 }
 
 // ============================================================================
@@ -211,7 +358,8 @@ function log(message, ...args) {
 function logTitle(title, subtitle = null) {
   if (CURRENT_LOG_LEVEL < LOG_LEVELS.info) return;
   
-  const width = Math.max(60, Math.max(title.length, subtitle ? subtitle.length : 0) + 4);
+  const contentLength = Math.max(title.length, subtitle ? subtitle.length : 0);
+  const width = calculateOutputWidth(60, contentLength, 4);
   console.error("");
   console.error(
     colorize(
@@ -330,7 +478,7 @@ function logAgentOutputStart(isResume = false) {
   if (CURRENT_LOG_LEVEL < LOG_LEVELS.info) return;
   
   const title = isResume ? "Cursor Agent 输出 (Resume)" : "Cursor Agent 输出";
-  const width = Math.max(60, title.length + 4);
+  const width = getAgentOutputBoxWidth(title);
   
   console.error("");
   console.error(
@@ -364,7 +512,7 @@ function logAgentOutputStart(isResume = false) {
 function logAgentOutputEnd() {
   if (CURRENT_LOG_LEVEL < LOG_LEVELS.info) return;
   
-  const width = 60; // 使用固定宽度，与开始标记匹配
+  const width = getAgentOutputBoxWidth(); // 使用与开始标记相同的宽度
   console.error(
     colorize(
       symbols.agentBox.bottomLeft + 
@@ -374,6 +522,9 @@ function logAgentOutputEnd() {
     )
   );
   console.error("");
+  
+  // 重置宽度，以便下次输出时重新计算
+  agentOutputBoxWidth = null;
 }
 
 /**
@@ -383,7 +534,7 @@ function logAgentErrorStart() {
   if (CURRENT_LOG_LEVEL < LOG_LEVELS.error) return;
   
   const title = "Cursor Agent 错误输出";
-  const width = Math.max(60, title.length + 4);
+  const width = getAgentOutputBoxWidth(title);
   
   console.error("");
   console.error(
@@ -417,7 +568,7 @@ function logAgentErrorStart() {
 function logAgentErrorEnd() {
   if (CURRENT_LOG_LEVEL < LOG_LEVELS.error) return;
   
-  const width = 60;
+  const width = getAgentOutputBoxWidth(); // 使用与开始标记相同的宽度
   console.error(
     colorize(
       symbols.agentBox.bottomLeft + 
@@ -427,6 +578,9 @@ function logAgentErrorEnd() {
     )
   );
   console.error("");
+  
+  // 重置宽度，以便下次输出时重新计算
+  agentOutputBoxWidth = null;
 }
 
 // 注意: 已移除 closeMCPBrowser 函数
@@ -1158,6 +1312,87 @@ function extractSessionId(jsonObj) {
 }
 
 /**
+ * 从 JSON 对象中提取用户提示词
+ * 支持 Cursor Agent 的实际格式：
+ * {
+ *   "type": "user",
+ *   "message": {
+ *     "role": "user",
+ *     "content": [
+ *       {
+ *         "type": "text",
+ *         "text": "用户提示词..."
+ *       }
+ *     ]
+ *   },
+ *   "session_id": "..."
+ * }
+ */
+function extractUserText(jsonObj) {
+  if (!jsonObj || typeof jsonObj !== "object") {
+    return null;
+  }
+  
+  // 检查是否是用户消息
+  if (jsonObj.type === "user") {
+    const parts = [];
+    
+    // Cursor Agent 实际格式：message.content[].text
+    if (
+      jsonObj.message &&
+      jsonObj.message.content &&
+      Array.isArray(jsonObj.message.content)
+    ) {
+      for (const item of jsonObj.message.content) {
+        if (item && typeof item === "object") {
+          // 查找 text 字段
+          if (
+            typeof item.text === "string" &&
+            item.text !== null &&
+            item.text !== ""
+          ) {
+            parts.push(item.text);
+          }
+          // 也支持直接的 content 字段（如果是字符串）
+          if (
+            typeof item.content === "string" &&
+            item.content !== null &&
+            item.content !== ""
+          ) {
+            parts.push(item.content);
+          }
+        }
+      }
+    }
+    
+    // 如果 message.content 是字符串（不是数组）
+    if (
+      jsonObj.message &&
+      typeof jsonObj.message.content === "string" &&
+      jsonObj.message.content !== null &&
+      jsonObj.message.content !== ""
+    ) {
+      parts.push(jsonObj.message.content);
+    }
+    
+    // 直接 content 字段
+    if (
+      typeof jsonObj.content === "string" &&
+      jsonObj.content !== null &&
+      jsonObj.content !== ""
+    ) {
+      parts.push(jsonObj.content);
+    }
+    
+    if (parts.length > 0) {
+      return parts.join("");
+    }
+  }
+  
+  return null;
+}
+
+/**
  * 从 JSON 对象中提取 assistant 文本内容
  * 支持 Cursor Agent 的实际格式：
  * {
@@ -1396,10 +1631,13 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
   let printedAny = false;
   let rawBuffer = ""; // 原始数据缓冲
   let chunkCount = 0;
-  let lastOutput = ""; // 记录上次输出的完整内容，用于流式输出的增量提取
+  let lastUserOutput = ""; // 记录上次输出的用户提示词完整内容
+  let lastAssistantOutput = ""; // 记录上次输出的 Agent 回复完整内容
   let sessionId = null; // 保存提取到的 session_id
   let agentOutputStarted = false; // 是否已显示 Agent 输出开始标记
   let currentLine = ""; // 当前正在输出的行（用于处理换行）
+  let currentSection = null; // 当前区域：'user' | 'assistant' | null
+  let userPromptDisplayed = false; // 用户提示词是否已显示
 
   // 直接监听 data 事件，因为流式数据可能不是完整的行
   stream.on("data", (chunk) => {
@@ -1449,7 +1687,6 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
       if (jsonStr) {
         try {
           const obj = JSON.parse(jsonStr);
-          const extracted = extractAssistantText(obj);
           
           // 提取 session_id
           const extractedSessionId = extractSessionId(obj);
@@ -1461,42 +1698,203 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
             }
           }
 
-          // 如果提取到内容，处理流式输出的增量更新
-          if (extracted && extracted !== "null" && extracted.length > 0) {
+          // 处理用户提示词
+          const userText = extractUserText(obj);
+          if (userText && userText !== "null" && userText.length > 0) {
             // 首次输出时显示 Agent 输出开始标记
             if (!agentOutputStarted) {
               logAgentOutputStart(isResume);
               agentOutputStarted = true;
             }
             
-            // cursor-agent 流式输出通常是累积式的：每个 JSON 包含完整的累积内容
-            // 如果新内容以旧内容开头，说明是增量更新，只输出新增部分
-            if (extracted.startsWith(lastOutput)) {
-              // 增量更新：只输出新增的部分
-              const newPart = extracted.slice(lastOutput.length);
+            // 处理用户提示词的增量更新
+            if (userText.startsWith(lastUserOutput)) {
+              const newPart = userText.slice(lastUserOutput.length);
               if (newPart.length > 0) {
-                // 处理换行，为每一行添加边框前缀
+                // 如果之前是 assistant 区域，需要切换
+                if (currentSection === "assistant") {
+                  // 输出当前行并换行
+                  if (currentLine.length > 0) {
+                    const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+                    process.stderr.write(boxPrefix + currentLine + "\n", "utf8");
+                    currentLine = "";
+                  }
+                  process.stderr.write(colorize(symbols.agentBox.vertical + " ", colors.blue) + "\n", "utf8");
+                }
+                
+                // 显示用户标签（如果还没显示）
+                if (!userPromptDisplayed) {
+                  const userLabel = colorize(symbols.userLabel + " ", colors.gray, colors.dim);
+                  const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+                  process.stderr.write(boxPrefix + userLabel, "utf8");
+                  userPromptDisplayed = true;
+                  currentSection = "user";
+                }
+                
+                // 处理换行
                 const lines = newPart.split(/\r?\n/);
+                const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+                const userLabel = colorize(symbols.userLabel + " ", colors.gray, colors.dim);
+                const boxWidth = getAgentOutputBoxWidth();
+                const prefixLength = 2 + getDisplayLength(userLabel); // "| " + 标签实际显示长度
+                const maxContentWidth = boxWidth - prefixLength - 2; // 减去边框和空格
+                
                 for (let i = 0; i < lines.length; i++) {
                   if (i === 0) {
                     // 第一行追加到当前行
-                    currentLine += lines[i];
+                    if (currentLine.length === 0) {
+                      // 如果当前行是空的，说明标签刚显示，直接设置内容
+                      currentLine = lines[i];
+                    } else {
+                      // 如果当前行已有内容，追加
+                      currentLine += lines[i];
+                    }
+                    
+                    // 检查是否需要换行
+                    if (currentLine.length > maxContentWidth) {
+                      const wrapped = wrapTextForAgentOutput(currentLine, boxWidth, prefixLength);
+                      // 输出第一行（带标签）
+                      if (wrapped.length > 0) {
+                        process.stderr.write(boxPrefix + userLabel + colorize(wrapped[0], colors.gray, colors.dim) + "\n", "utf8");
+                        currentLine = wrapped.slice(1).join(" ") || "";
+                      }
+                    }
                   } else {
-                    // 输出完整行（带边框前缀）
+                    // 输出完整行（只带边框前缀，标签只在第一行显示）
                     if (currentLine.length > 0) {
-                      const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
-                      process.stderr.write(boxPrefix + currentLine + "\n", "utf8");
-                      currentLine = "";
+                      // 检查是否需要换行
+                      if (currentLine.length > maxContentWidth) {
+                        const wrapped = wrapTextForAgentOutput(currentLine, boxWidth, 2); // 只有边框前缀，没有标签
+                        for (const line of wrapped) {
+                          process.stderr.write(boxPrefix + colorize(line, colors.gray, colors.dim) + "\n", "utf8");
+                        }
+                        currentLine = "";
+                      } else {
+                        process.stderr.write(boxPrefix + colorize(currentLine, colors.gray, colors.dim) + "\n", "utf8");
+                        currentLine = "";
+                      }
                     }
                     // 新行
-                    currentLine = lines[i];
+                    if (lines[i]) {
+                      currentLine = lines[i];
+                    }
+                  }
+                }
+                printedAny = true;
+                lastUserOutput = userText;
+              }
+            } else if (userText !== lastUserOutput) {
+              // 内容完全不一样
+              if (currentLine.length > 0) {
+                const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+                process.stderr.write(boxPrefix + currentLine + "\n", "utf8");
+                currentLine = "";
+              }
+              
+              const userLabel = colorize(symbols.userLabel + " ", colors.gray, colors.dim);
+              const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+              const lines = userText.split(/\r?\n/);
+              for (let i = 0; i < lines.length - 1; i++) {
+                process.stderr.write(boxPrefix + userLabel + colorize(lines[i], colors.gray, colors.dim) + "\n", "utf8");
+              }
+              if (lines.length > 0) {
+                currentLine = lines[lines.length - 1];
+              }
+              printedAny = true;
+              lastUserOutput = userText;
+              currentSection = "user";
+              userPromptDisplayed = true;
+            }
+          }
+
+          // 处理 Agent 回复
+          const assistantText = extractAssistantText(obj);
+          if (assistantText && assistantText !== "null" && assistantText.length > 0) {
+            // 首次输出时显示 Agent 输出开始标记
+            if (!agentOutputStarted) {
+              logAgentOutputStart(isResume);
+              agentOutputStarted = true;
+            }
+            
+            // 如果之前是用户区域，需要切换
+            if (currentSection === "user") {
+              // 输出当前行并换行
+              if (currentLine.length > 0) {
+                const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+                process.stderr.write(boxPrefix + currentLine + "\n", "utf8");
+                currentLine = "";
+              }
+              process.stderr.write(colorize(symbols.agentBox.vertical + " ", colors.blue) + "\n", "utf8");
+            }
+            
+            // cursor-agent 流式输出通常是累积式的：每个 JSON 包含完整的累积内容
+            // 如果新内容以旧内容开头，说明是增量更新，只输出新增部分
+            if (assistantText.startsWith(lastAssistantOutput)) {
+              // 增量更新：只输出新增的部分
+              const newPart = assistantText.slice(lastAssistantOutput.length);
+              if (newPart.length > 0) {
+                // 显示 Agent 标签（如果还没显示或刚切换）
+                if (currentSection !== "assistant") {
+                  const agentLabel = colorize(symbols.agentLabel + " ", colors.blue);
+                  const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+                  process.stderr.write(boxPrefix + agentLabel, "utf8");
+                  currentSection = "assistant";
+                }
+                
+                // 处理换行，为每一行添加边框前缀（标签只在第一行显示）
+                const lines = newPart.split(/\r?\n/);
+                const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+                const agentLabel = colorize(symbols.agentLabel + " ", colors.blue);
+                const boxWidth = getAgentOutputBoxWidth();
+                const prefixLength = 2 + getDisplayLength(agentLabel); // "| " + 标签实际显示长度
+                const maxContentWidth = boxWidth - prefixLength - 2; // 减去边框和空格
+                
+                for (let i = 0; i < lines.length; i++) {
+                  if (i === 0) {
+                    // 第一行追加到当前行
+                    if (currentLine.length === 0) {
+                      // 如果当前行是空的，说明标签刚显示，直接设置内容
+                      currentLine = lines[i];
+                    } else {
+                      // 如果当前行已有内容，追加
+                      currentLine += lines[i];
+                    }
+                    
+                    // 检查是否需要换行
+                    if (currentLine.length > maxContentWidth) {
+                      const wrapped = wrapTextForAgentOutput(currentLine, boxWidth, prefixLength);
+                      // 输出第一行（带标签）
+                      if (wrapped.length > 0) {
+                        process.stderr.write(boxPrefix + agentLabel + wrapped[0] + "\n", "utf8");
+                        currentLine = wrapped.slice(1).join(" ") || "";
+                      }
+                    }
+                  } else {
+                    // 输出完整行（只带边框前缀，标签只在第一行显示）
+                    if (currentLine.length > 0) {
+                      // 检查是否需要换行
+                      if (currentLine.length > maxContentWidth) {
+                        const wrapped = wrapTextForAgentOutput(currentLine, boxWidth, 2); // 只有边框前缀，没有标签
+                        for (const line of wrapped) {
+                          process.stderr.write(boxPrefix + line + "\n", "utf8");
+                        }
+                        currentLine = "";
+                      } else {
+                        process.stderr.write(boxPrefix + currentLine + "\n", "utf8");
+                        currentLine = "";
+                      }
+                    }
+                    // 新行
+                    if (lines[i]) {
+                      currentLine = lines[i];
+                    }
                   }
                 }
                 // 如果最后一行没有换行符，暂不输出（等待更多内容或结束）
                 printedAny = true;
-                lastOutput = extracted; // 更新记录的完整内容
+                lastAssistantOutput = assistantText; // 更新记录的完整内容
               }
-            } else if (extracted !== lastOutput) {
+            } else if (assistantText !== lastAssistantOutput) {
               // 内容完全不一样（这种情况很少），输出全部
               // 先输出当前行（如果有）
               if (currentLine.length > 0) {
@@ -1504,17 +1902,22 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
                 process.stderr.write(boxPrefix + currentLine + "\n", "utf8");
                 currentLine = "";
               }
-              // 输出新内容
-              const lines = extracted.split(/\r?\n/);
+              
+              // 显示 Agent 标签
+              const agentLabel = colorize(symbols.agentLabel + " ", colors.blue);
               const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+              const lines = assistantText.split(/\r?\n/);
               for (let i = 0; i < lines.length - 1; i++) {
-                process.stderr.write(boxPrefix + lines[i] + "\n", "utf8");
+                process.stderr.write(boxPrefix + agentLabel + lines[i] + "\n", "utf8");
               }
-              currentLine = lines[lines.length - 1];
+              if (lines.length > 0) {
+                currentLine = lines[lines.length - 1];
+              }
               printedAny = true;
-              lastOutput = extracted;
+              lastAssistantOutput = assistantText;
+              currentSection = "assistant";
             }
-            // 如果 extracted === lastOutput，说明内容没有变化，不输出
+            // 如果 assistantText === lastAssistantOutput，说明内容没有变化，不输出
           }
 
           // DEBUG模式下输出详细信息
@@ -1610,7 +2013,16 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
     // 输出剩余的当前行（如果有）
     if (currentLine.length > 0) {
       const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
-      process.stderr.write(boxPrefix + currentLine + "\n", "utf8");
+      let label = "";
+      if (currentSection === "user") {
+        label = colorize(symbols.userLabel + " ", colors.gray, colors.dim);
+        process.stderr.write(boxPrefix + label + colorize(currentLine, colors.gray, colors.dim) + "\n", "utf8");
+      } else if (currentSection === "assistant") {
+        label = colorize(symbols.agentLabel + " ", colors.blue);
+        process.stderr.write(boxPrefix + label + currentLine + "\n", "utf8");
+      } else {
+        process.stderr.write(boxPrefix + currentLine + "\n", "utf8");
+      }
       currentLine = "";
     }
 
@@ -1619,9 +2031,9 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
       logAgentOutputEnd();
     }
 
-    // 调用文本收集回调（如果提供）
-    if (onText && lastOutput) {
-      onText(lastOutput);
+    // 调用文本收集回调（如果提供）- 只传递 assistant 文本
+    if (onText && lastAssistantOutput) {
+      onText(lastAssistantOutput);
     }
     
     // 最后回调 session_id（如果提取到了）
