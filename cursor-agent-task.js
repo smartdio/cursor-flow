@@ -11,6 +11,152 @@ const readline = require("readline");
 // 注意: 已移除浏览器关闭相关功能
 
 // ============================================================================
+// 颜色和格式化工具
+// ============================================================================
+
+/**
+ * 检测终端是否支持颜色和 Unicode
+ */
+function detectTerminalCapabilities() {
+  const isTTY = process.stderr.isTTY;
+  const forceColor = process.env.FORCE_COLOR;
+  const noColor = process.env.NO_COLOR;
+  const term = process.env.TERM || "";
+  
+  // 检测颜色支持
+  const supportsColor = isTTY && 
+    (forceColor === "1" || forceColor === "true" || forceColor === "2" || forceColor === "3") ||
+    (forceColor !== "0" && noColor !== "1" && term !== "dumb");
+  
+  // 检测 Unicode 支持（简单检测）
+  const supportsUnicode = isTTY && term !== "dumb" && 
+    !process.env.CI && // CI 环境可能不支持
+    (process.platform !== "win32" || process.env.WT_SESSION); // Windows Terminal 支持
+  
+  return { supportsColor, supportsUnicode, isTTY };
+}
+
+const TERMINAL = detectTerminalCapabilities();
+
+/**
+ * ANSI 颜色代码
+ */
+const colors = {
+  reset: "\x1b[0m",
+  bold: "\x1b[1m",
+  dim: "\x1b[2m",
+  
+  // 前景色
+  black: "\x1b[30m",
+  red: "\x1b[31m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m",
+  blue: "\x1b[34m",
+  magenta: "\x1b[35m",
+  cyan: "\x1b[36m",
+  white: "\x1b[37m",
+  gray: "\x1b[90m",
+  
+  // 背景色
+  bgBlack: "\x1b[40m",
+  bgRed: "\x1b[41m",
+  bgGreen: "\x1b[42m",
+  bgYellow: "\x1b[43m",
+  bgBlue: "\x1b[44m",
+  bgMagenta: "\x1b[45m",
+  bgCyan: "\x1b[46m",
+  bgWhite: "\x1b[47m",
+  bgGray: "\x1b[100m",
+};
+
+/**
+ * 应用颜色（如果不支持颜色则返回原文本）
+ */
+function colorize(text, ...colorCodes) {
+  if (!TERMINAL.supportsColor) {
+    return text;
+  }
+  return colorCodes.join("") + text + colors.reset;
+}
+
+/**
+ * Unicode 字符（如果不支持则使用 ASCII 替代）
+ */
+const symbols = {
+  // 成功/完成
+  check: TERMINAL.supportsUnicode ? "✓" : "[OK]",
+  checkCircle: TERMINAL.supportsUnicode ? "●" : "*",
+  
+  // 错误/失败
+  cross: TERMINAL.supportsUnicode ? "✗" : "[X]",
+  
+  // 警告
+  warning: TERMINAL.supportsUnicode ? "⚠" : "[!]",
+  
+  // 信息
+  info: TERMINAL.supportsUnicode ? "ℹ" : "[i]",
+  
+  // 步骤/进行中
+  arrowRight: TERMINAL.supportsUnicode ? "▶" : ">",
+  arrowRightSmall: TERMINAL.supportsUnicode ? "▸" : "->",
+  arrow: TERMINAL.supportsUnicode ? "→" : "->",
+  
+  // 边框字符
+  box: {
+    topLeft: TERMINAL.supportsUnicode ? "┌" : "+",
+    topRight: TERMINAL.supportsUnicode ? "┐" : "+",
+    bottomLeft: TERMINAL.supportsUnicode ? "└" : "+",
+    bottomRight: TERMINAL.supportsUnicode ? "┘" : "+",
+    horizontal: TERMINAL.supportsUnicode ? "─" : "-",
+    vertical: TERMINAL.supportsUnicode ? "│" : "|",
+    topT: TERMINAL.supportsUnicode ? "┬" : "+",
+    bottomT: TERMINAL.supportsUnicode ? "┴" : "+",
+    leftT: TERMINAL.supportsUnicode ? "├" : "+",
+    rightT: TERMINAL.supportsUnicode ? "┤" : "+",
+    cross: TERMINAL.supportsUnicode ? "┼" : "+",
+  },
+  
+  // Agent 输出边框（双线）
+  agentBox: {
+    topLeft: TERMINAL.supportsUnicode ? "╔" : "+",
+    topRight: TERMINAL.supportsUnicode ? "╗" : "+",
+    bottomLeft: TERMINAL.supportsUnicode ? "╚" : "+",
+    bottomRight: TERMINAL.supportsUnicode ? "╝" : "+",
+    horizontal: TERMINAL.supportsUnicode ? "═" : "=",
+    vertical: TERMINAL.supportsUnicode ? "║" : "|",
+    topT: TERMINAL.supportsUnicode ? "╦" : "+",
+    bottomT: TERMINAL.supportsUnicode ? "╩" : "+",
+    leftT: TERMINAL.supportsUnicode ? "╠" : "+",
+    rightT: TERMINAL.supportsUnicode ? "╣" : "+",
+  },
+};
+
+/**
+ * 绘制水平线
+ */
+function drawHorizontalLine(length, char = symbols.box.horizontal) {
+  return char.repeat(Math.max(1, length));
+}
+
+/**
+ * 绘制带文本的框线
+ */
+function drawBoxLine(text, width, leftChar = symbols.box.vertical, rightChar = symbols.box.vertical) {
+  const textLen = text.length;
+  const padding = Math.max(0, width - textLen - 2);
+  return leftChar + " " + text + " ".repeat(padding) + " " + rightChar;
+}
+
+/**
+ * 绘制 Agent 输出框线
+ */
+function drawAgentBoxLine(text, width) {
+  const textLen = text.length;
+  const padding = Math.max(0, width - textLen - 2);
+  return symbols.agentBox.vertical + " " + text + " ".repeat(padding) + " " + symbols.agentBox.vertical;
+}
+
+// ============================================================================
 // 语义判定提示词配置（用于判断任务是否完成）
 // ============================================================================
 // 此提示词用于 call-llm 进行语义判定，判断 cursor-agent 的执行结果
@@ -32,15 +178,255 @@ const SEMANTIC_JUDGE_PROMPT = `
 \`\`\`
 `;
 
-// 日志输出函数（输出到 stderr，避免影响 stdout）
+// ============================================================================
+// 日志输出函数系统（输出到 stderr，避免影响 stdout）
+// ============================================================================
+
+// 日志级别控制（可通过环境变量 LOG_LEVEL 设置）
+const LOG_LEVELS = {
+  silent: 0,
+  error: 1,
+  warn: 2,
+  info: 3,
+  verbose: 4,
+  debug: 5,
+};
+
+const CURRENT_LOG_LEVEL = LOG_LEVELS[process.env.LOG_LEVEL || "info"] || LOG_LEVELS.info;
+
+/**
+ * 基础日志函数（保留用于向后兼容）
+ */
 function log(message, ...args) {
-  const timestamp = new Date().toISOString();
-  const prefix = `[${timestamp}]`;
-  console.error(prefix, message, ...args);
+  if (CURRENT_LOG_LEVEL >= LOG_LEVELS.info) {
+    const timestamp = new Date().toISOString();
+    const prefix = `[${timestamp}]`;
+    console.error(prefix, message, ...args);
+  }
 }
 
+/**
+ * 标题/分隔符
+ */
+function logTitle(title, subtitle = null) {
+  if (CURRENT_LOG_LEVEL < LOG_LEVELS.info) return;
+  
+  const width = Math.max(60, Math.max(title.length, subtitle ? subtitle.length : 0) + 4);
+  console.error("");
+  console.error(
+    colorize(
+      symbols.box.topLeft + drawHorizontalLine(width - 2, symbols.box.horizontal) + symbols.box.topRight,
+      colors.cyan
+    )
+  );
+  console.error(colorize(drawBoxLine(title, width), colors.cyan, colors.bold));
+  if (subtitle) {
+    console.error(colorize(drawBoxLine(subtitle, width), colors.cyan));
+  }
+  console.error(
+    colorize(
+      symbols.box.bottomLeft + drawHorizontalLine(width - 2, symbols.box.horizontal) + symbols.box.bottomRight,
+      colors.cyan
+    )
+  );
+  console.error("");
+}
+
+/**
+ * 成功信息
+ */
+function logSuccess(message, ...args) {
+  if (CURRENT_LOG_LEVEL < LOG_LEVELS.info) return;
+  const prefix = colorize(symbols.check + " ", colors.green, colors.bold);
+  console.error(prefix + colorize(message, colors.green), ...args);
+}
+
+/**
+ * 错误信息
+ */
+function logError(message, ...args) {
+  if (CURRENT_LOG_LEVEL < LOG_LEVELS.error) return;
+  const prefix = colorize(symbols.cross + " ", colors.red, colors.bold);
+  console.error(prefix + colorize(message, colors.red), ...args);
+}
+
+/**
+ * 警告信息
+ */
+function logWarning(message, ...args) {
+  if (CURRENT_LOG_LEVEL < LOG_LEVELS.warn) return;
+  const prefix = colorize(symbols.warning + " ", colors.yellow, colors.bold);
+  console.error(prefix + colorize(message, colors.yellow), ...args);
+}
+
+/**
+ * 信息（普通）
+ */
+function logInfo(message, ...args) {
+  if (CURRENT_LOG_LEVEL < LOG_LEVELS.info) return;
+  const prefix = colorize(symbols.info + " ", colors.blue);
+  console.error(prefix + message, ...args);
+}
+
+/**
+ * 步骤信息
+ */
 function logStep(step, message, ...args) {
-  log(`[步骤 ${step}]`, message, ...args);
+  if (CURRENT_LOG_LEVEL < LOG_LEVELS.info) return;
+  const prefix = colorize(symbols.arrowRight + " ", colors.cyan, colors.bold) + 
+                 colorize(`[步骤 ${step}] `, colors.cyan);
+  console.error(prefix + message, ...args);
+}
+
+/**
+ * 子步骤信息
+ */
+function logSubStep(message, ...args) {
+  if (CURRENT_LOG_LEVEL < LOG_LEVELS.info) return;
+  const prefix = "  " + colorize(symbols.arrowRightSmall + " ", colors.cyan);
+  console.error(prefix + message, ...args);
+}
+
+/**
+ * 详细信息（verbose）
+ */
+function logDetail(message, ...args) {
+  if (CURRENT_LOG_LEVEL < LOG_LEVELS.verbose) return;
+  const prefix = "  " + colorize("▸ ", colors.gray);
+  console.error(prefix + colorize(message, colors.gray), ...args);
+}
+
+/**
+ * 调试信息
+ */
+function logDebug(message, ...args) {
+  if (CURRENT_LOG_LEVEL < LOG_LEVELS.debug) return;
+  const prefix = colorize("[DEBUG] ", colors.gray, colors.dim);
+  console.error(prefix + colorize(message, colors.gray, colors.dim), ...args);
+}
+
+/**
+ * 重要状态
+ */
+function logStatus(message, ...args) {
+  if (CURRENT_LOG_LEVEL < LOG_LEVELS.info) return;
+  const prefix = colorize(symbols.checkCircle + " ", colors.cyan, colors.bold);
+  console.error(prefix + colorize(message, colors.cyan, colors.bold), ...args);
+}
+
+/**
+ * 流程/跳转
+ */
+function logFlow(message, ...args) {
+  if (CURRENT_LOG_LEVEL < LOG_LEVELS.info) return;
+  const prefix = colorize(symbols.arrow + " ", colors.cyan);
+  console.error(prefix + message, ...args);
+}
+
+/**
+ * Cursor Agent 输出开始标记
+ */
+function logAgentOutputStart(isResume = false) {
+  if (CURRENT_LOG_LEVEL < LOG_LEVELS.info) return;
+  
+  const title = isResume ? "Cursor Agent 输出 (Resume)" : "Cursor Agent 输出";
+  const width = Math.max(60, title.length + 4);
+  
+  console.error("");
+  console.error(
+    colorize(
+      symbols.agentBox.topLeft + 
+      drawHorizontalLine(width - 2, symbols.agentBox.horizontal) + 
+      symbols.agentBox.topRight,
+      colors.blue
+    )
+  );
+  console.error(
+    colorize(
+      drawAgentBoxLine(title, width),
+      colors.blue,
+      colors.bold
+    )
+  );
+  console.error(
+    colorize(
+      symbols.agentBox.leftT + 
+      drawHorizontalLine(width - 2, symbols.agentBox.horizontal) + 
+      symbols.agentBox.rightT,
+      colors.blue
+    )
+  );
+}
+
+/**
+ * Cursor Agent 输出结束标记
+ */
+function logAgentOutputEnd() {
+  if (CURRENT_LOG_LEVEL < LOG_LEVELS.info) return;
+  
+  const width = 60; // 使用固定宽度，与开始标记匹配
+  console.error(
+    colorize(
+      symbols.agentBox.bottomLeft + 
+      drawHorizontalLine(width - 2, symbols.agentBox.horizontal) + 
+      symbols.agentBox.bottomRight,
+      colors.blue
+    )
+  );
+  console.error("");
+}
+
+/**
+ * Cursor Agent 错误输出开始标记
+ */
+function logAgentErrorStart() {
+  if (CURRENT_LOG_LEVEL < LOG_LEVELS.error) return;
+  
+  const title = "Cursor Agent 错误输出";
+  const width = Math.max(60, title.length + 4);
+  
+  console.error("");
+  console.error(
+    colorize(
+      symbols.agentBox.topLeft + 
+      drawHorizontalLine(width - 2, symbols.agentBox.horizontal) + 
+      symbols.agentBox.topRight,
+      colors.red
+    )
+  );
+  console.error(
+    colorize(
+      drawAgentBoxLine(title, width),
+      colors.red,
+      colors.bold
+    )
+  );
+  console.error(
+    colorize(
+      symbols.agentBox.leftT + 
+      drawHorizontalLine(width - 2, symbols.agentBox.horizontal) + 
+      symbols.agentBox.rightT,
+      colors.red
+    )
+  );
+}
+
+/**
+ * Cursor Agent 错误输出结束标记
+ */
+function logAgentErrorEnd() {
+  if (CURRENT_LOG_LEVEL < LOG_LEVELS.error) return;
+  
+  const width = 60;
+  console.error(
+    colorize(
+      symbols.agentBox.bottomLeft + 
+      drawHorizontalLine(width - 2, symbols.agentBox.horizontal) + 
+      symbols.agentBox.bottomRight,
+      colors.red
+    )
+  );
+  console.error("");
 }
 
 // 注意: 已移除 closeMCPBrowser 函数
@@ -57,11 +443,12 @@ function loadEnvFile() {
   const envFilePath = path.resolve(process.cwd(), ".flow", ".env");
   
   if (!fs.existsSync(envFilePath)) {
-    logStep(0, `环境变量文件不存在: ${envFilePath}`);
+    logDetail(`环境变量文件不存在: ${envFilePath}`);
     return;
   }
 
-  logStep(0, `从文件加载环境变量: ${envFilePath}`);
+  logStep(0, "加载环境变量");
+  logSubStep(`从文件加载: ${envFilePath}`);
   
   try {
     const content = fs.readFileSync(envFilePath, "utf8");
@@ -98,14 +485,18 @@ function loadEnvFile() {
           // 优先使用文件中的值（覆盖系统环境变量）
           process.env[key] = value;
           loadedCount++;
-          logStep(0, `已加载: ${key} = ${value.substring(0, 20)}${value.length > 20 ? "..." : ""}`);
+          logDetail(`已加载: ${key} = ${value.substring(0, 20)}${value.length > 20 ? "..." : ""}`);
         }
       }
     }
 
-    logStep(0, `环境变量加载完成，共加载 ${loadedCount} 个变量`);
+    if (loadedCount > 0) {
+      logSuccess(`环境变量加载完成，共加载 ${loadedCount} 个变量`);
+    } else {
+      logDetail("未加载任何环境变量");
+    }
   } catch (err) {
-    logStep(0, `读取环境变量文件失败: ${err.message}`);
+    logWarning(`读取环境变量文件失败: ${err.message}`);
   }
 }
 
@@ -270,7 +661,7 @@ async function buildUserPrompt(prompt, promptFiles) {
 
   // 第一步：处理所有文件（-f 参数）
   if (promptFiles.length > 0) {
-    logStep(2, `开始读取 ${promptFiles.length} 个文件`);
+    logStep(2, `读取提示词文件 (${promptFiles.length} 个)`);
     let stdinUsed = false;
     let first = true;
     for (let i = 0; i < promptFiles.length; i++) {
@@ -278,29 +669,21 @@ async function buildUserPrompt(prompt, promptFiles) {
       let content = "";
       if (f === "-") {
         if (stdinUsed) {
+          logError("标准输入 (-) 只能使用一次");
           die(2, "错误: 标准输入 (-) 只能使用一次");
         }
-        logStep(2, `文件 ${i + 1}/${promptFiles.length}: 从标准输入读取`);
+        logSubStep(`文件 ${i + 1}/${promptFiles.length}: 从标准输入读取`);
         stdinUsed = true;
         content = await readAll(process.stdin);
-        logStep(
-          2,
-          `文件 ${i + 1}/${promptFiles.length}: 从标准输入读取完成，长度:`,
-          content.length,
-          "字符"
-        );
+        logDetail(`读取完成，长度: ${content.length} 字符`);
       } else {
         if (!fs.existsSync(f)) {
+          logError(`文件不存在: ${f}`);
           die(2, `错误: 文件不存在: ${f}`);
         }
-        logStep(2, `文件 ${i + 1}/${promptFiles.length}: 读取文件 ${f}`);
+        logSubStep(`文件 ${i + 1}/${promptFiles.length}: ${f}`);
         content = await fsp.readFile(f, "utf8");
-        logStep(
-          2,
-          `文件 ${i + 1}/${promptFiles.length}: 读取完成，长度:`,
-          content.length,
-          "字符"
-        );
+        logDetail(`读取完成，长度: ${content.length} 字符`);
       }
       if (first) {
         out += content;
@@ -310,35 +693,38 @@ async function buildUserPrompt(prompt, promptFiles) {
       }
       hasContent = true;
     }
-    logStep(2, "所有文件读取完成");
+    logSuccess(`所有文件读取完成`);
   }
 
   // 第二步：追加 prompt（-p 参数）
   if (prompt) {
     if (hasContent) {
       out += "\n\n" + prompt;
-      logStep(2, "已追加直接提示词，合并后总长度:", out.length, "字符");
+      logSubStep(`已追加直接提示词`);
     } else {
       out = prompt;
-      logStep(2, "使用直接提示词，长度:", prompt.length, "字符");
+      logSubStep(`使用直接提示词`);
     }
-  } else {
-    logStep(2, "合并后总长度:", out.length, "字符");
+    logDetail(`合并后总长度: ${out.length} 字符`);
+  } else if (hasContent) {
+    logDetail(`合并后总长度: ${out.length} 字符`);
   }
 
   return out;
 }
 
 function ensureCursorAgentInstalled() {
-  logStep(3, "检查 cursor-agent 是否已安装");
+  logDetail("检查 cursor-agent 是否已安装");
   try {
     const r = spawnSync("cursor-agent", ["--help"], { encoding: "utf8" });
     if (r.error && r.error.code === "ENOENT") {
+      logError("未找到 cursor-agent 命令，请确认已安装并在 PATH 中");
       die(127, "错误: 未找到 cursor-agent 命令，请确认已安装并在 PATH 中");
     }
-    logStep(3, "cursor-agent 检测成功");
+    logDetail("cursor-agent 检测成功");
     return (r.stdout || "") + (r.stderr || "");
   } catch (e) {
+    logError("未找到 cursor-agent 命令，请确认已安装并在 PATH 中");
     die(127, "错误: 未找到 cursor-agent 命令，请确认已安装并在 PATH 中");
   }
 }
@@ -408,7 +794,7 @@ function runCallLLMOnce(args, timeoutSeconds = 60) {
     }
 
     const isCommand = scriptPathOrCommand === "call-llm";
-    logStep(10, `执行 call-llm: ${(isCommand ? "call-llm" : `node ${scriptPathOrCommand}`) + " " + args.join(" ")}`);
+    logDebug(`执行 call-llm: ${(isCommand ? "call-llm" : `node ${scriptPathOrCommand}`) + " " + args.join(" ")}`);
 
     const child = spawn(
       isCommand ? "call-llm" : "node",
@@ -503,18 +889,15 @@ async function interpretSemanticsViaLLM(judgeModel, executionSummary) {
       "-p", judgePrompt,
     ];
 
-    logStep(10, `[语义判定] 使用模型: ${judgeModel}`);
+    logSubStep(`使用模型: ${judgeModel}`);
     
     const result = await runCallLLMOnce(args, 60); // 60秒超时
 
     if (result.exitCode !== 0 || result.stderr) {
-      logStep(10, `[语义判定] call-llm 返回非零退出码或错误输出`);
-      logStep(10, `[语义判定] 退出码: ${result.exitCode}`);
+      logWarning(`call-llm 返回非零退出码或错误输出`);
+      logDetail(`退出码: ${result.exitCode}`);
       if (result.stderr) {
-        logStep(10, `[语义判定] 错误输出: ${result.stderr}`);
-      }
-      if (result.stdout) {
-        logStep(10, `[语义判定] 标准输出: ${result.stdout.substring(0, 500)}${result.stdout.length > 500 ? "..." : ""}`);
+        logDetail(`错误输出: ${result.stderr.substring(0, 200)}${result.stderr.length > 200 ? "..." : ""}`);
       }
       return {
         result: "resume",
@@ -527,11 +910,21 @@ async function interpretSemanticsViaLLM(judgeModel, executionSummary) {
     }
 
     const parsed = parseLLMResult(result.stdout);
-    logStep(10, `[语义判定] 结果: ${parsed.result}`);
+    const resultText = parsed.result === "done" ? "已完成" :
+                       parsed.result === "resume" ? "需要继续" :
+                       parsed.result === "auto" ? "建议继续" : parsed.result;
+    const resultColor = parsed.result === "done" ? colors.green :
+                        parsed.result === "resume" ? colors.yellow : colors.cyan;
+    logSubStep(`判定结果: ${colorize(resultText, resultColor, colors.bold)}`);
+    if (parsed.reasons && parsed.reasons.length > 0) {
+      for (const reason of parsed.reasons.slice(0, 3)) {
+        logDetail(`• ${reason}`);
+      }
+    }
     
     return parsed;
   } catch (err) {
-    logStep(10, `语义判定调用失败: ${err.message}`);
+    logError(`语义判定调用失败: ${err.message}`);
     return {
       result: "resume",
       reasons: [`判定调用失败: ${err.message}`],
@@ -592,8 +985,6 @@ function runCursorAgentResume(model, sessionId, prompt, timeoutMinutes) {
       prompt,  // 简短的提示词作为位置参数
     ];
 
-    logStep(11, `调用 cursor-agent resume: cursor-agent --model ${model} --resume=${sessionId} --print --output-format stream-json --force "${prompt}"`);
-
     const child = spawn(command, args, {
       cwd: process.cwd(),
       stdio: ["ignore", "pipe", "pipe"],  // stdin 不使用
@@ -604,6 +995,8 @@ function runCursorAgentResume(model, sessionId, prompt, timeoutMinutes) {
     let stderr = "";
     let isClosed = false;
     let extractedSessionId = sessionId; // 初始化为传入的 session_id
+    let agentOutputStarted = false; // 是否已显示 Agent 输出开始标记
+    let agentErrorStarted = false; // 是否已显示 Agent 错误输出开始标记
 
     // 安全写入函数，检查流是否可写
     const safeWrite = (stream, text) => {
@@ -631,14 +1024,28 @@ function runCursorAgentResume(model, sessionId, prompt, timeoutMinutes) {
       }, (sessionIdFromStream) => {
         // 收集提取的 session_id（可能更新）
         extractedSessionId = sessionIdFromStream;
-      });
+      }, true); // resume 模式
     } else {
       // 非流式模式：直接收集输出，同时尝试提取 session_id
       child.stdout.on("data", (data) => {
         const text = data.toString();
         stdout += text;
-        // 输出到 stderr，避免污染 stdout（JSON 输出）
-        safeWrite(process.stderr, data);
+        
+        // 首次输出时显示 Agent 输出开始标记
+        if (!agentOutputStarted) {
+          logAgentOutputStart(true); // resume 模式
+          agentOutputStarted = true;
+        }
+        
+        // 输出内容（带边框前缀）
+        const lines = text.split(/\r?\n/);
+        const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+        for (const line of lines.slice(0, -1)) {
+          safeWrite(process.stderr, boxPrefix + line + "\n");
+        }
+        if (lines[lines.length - 1]) {
+          safeWrite(process.stderr, boxPrefix + lines[lines.length - 1]);
+        }
         
         // 尝试从输出中提取 session_id
         try {
@@ -665,8 +1072,22 @@ function runCursorAgentResume(model, sessionId, prompt, timeoutMinutes) {
     child.stderr.on("data", (data) => {
       const text = data.toString();
       stderr += text;
-      // 实时输出到控制台
-      safeWrite(process.stderr, text);
+      
+      // 显示错误输出边框
+      if (!agentErrorStarted) {
+        logAgentErrorStart();
+        agentErrorStarted = true;
+      }
+      
+      // 输出错误内容（带边框前缀）
+      const lines = text.split(/\r?\n/);
+      const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.red);
+      for (const line of lines.slice(0, -1)) {
+        safeWrite(process.stderr, boxPrefix + line + "\n");
+      }
+      if (lines[lines.length - 1]) {
+        safeWrite(process.stderr, boxPrefix + lines[lines.length - 1]);
+      }
     });
 
     const timeoutMs = timeoutMinutes * 60 * 1000;
@@ -679,6 +1100,15 @@ function runCursorAgentResume(model, sessionId, prompt, timeoutMinutes) {
     child.on("close", (code) => {
       isClosed = true;
       clearTimeout(timeoutId);
+      
+      // 关闭输出边框
+      if (agentOutputStarted) {
+        logAgentOutputEnd();
+      }
+      if (agentErrorStarted) {
+        logAgentErrorEnd();
+      }
+      
       const durationMs = Date.now() - startTime;
       resolve({
         exitCode: code ?? 0,
@@ -692,6 +1122,15 @@ function runCursorAgentResume(model, sessionId, prompt, timeoutMinutes) {
     child.on("error", (err) => {
       isClosed = true;
       clearTimeout(timeoutId);
+      
+      // 关闭输出边框
+      if (agentOutputStarted) {
+        logAgentOutputEnd();
+      }
+      if (agentErrorStarted) {
+        logAgentErrorEnd();
+      }
+      
       reject(err);
     });
   });
@@ -949,15 +1388,18 @@ function extractAssistantText(jsonObj) {
  * @param {Function} onEnd - 结束回调
  * @param {Function} [onText] - 文本收集回调，接收提取的完整文本
  * @param {Function} [onSessionId] - session_id 收集回调，接收提取的 session_id
+ * @param {boolean} [isResume] - 是否是 resume 模式
  */
-function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId) {
-  logStep(7, "初始化流式输出过滤器");
+function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume = false) {
+  logDetail("初始化流式输出过滤器");
 
   let printedAny = false;
   let rawBuffer = ""; // 原始数据缓冲
   let chunkCount = 0;
   let lastOutput = ""; // 记录上次输出的完整内容，用于流式输出的增量提取
   let sessionId = null; // 保存提取到的 session_id
+  let agentOutputStarted = false; // 是否已显示 Agent 输出开始标记
+  let currentLine = ""; // 当前正在输出的行（用于处理换行）
 
   // 直接监听 data 事件，因为流式数据可能不是完整的行
   stream.on("data", (chunk) => {
@@ -1021,20 +1463,54 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId) {
 
           // 如果提取到内容，处理流式输出的增量更新
           if (extracted && extracted !== "null" && extracted.length > 0) {
+            // 首次输出时显示 Agent 输出开始标记
+            if (!agentOutputStarted) {
+              logAgentOutputStart(isResume);
+              agentOutputStarted = true;
+            }
+            
             // cursor-agent 流式输出通常是累积式的：每个 JSON 包含完整的累积内容
             // 如果新内容以旧内容开头，说明是增量更新，只输出新增部分
             if (extracted.startsWith(lastOutput)) {
               // 增量更新：只输出新增的部分
               const newPart = extracted.slice(lastOutput.length);
               if (newPart.length > 0) {
-                // 输出到 stderr，避免污染 stdout（JSON 输出）
-                process.stderr.write(newPart, "utf8");
+                // 处理换行，为每一行添加边框前缀
+                const lines = newPart.split(/\r?\n/);
+                for (let i = 0; i < lines.length; i++) {
+                  if (i === 0) {
+                    // 第一行追加到当前行
+                    currentLine += lines[i];
+                  } else {
+                    // 输出完整行（带边框前缀）
+                    if (currentLine.length > 0) {
+                      const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+                      process.stderr.write(boxPrefix + currentLine + "\n", "utf8");
+                      currentLine = "";
+                    }
+                    // 新行
+                    currentLine = lines[i];
+                  }
+                }
+                // 如果最后一行没有换行符，暂不输出（等待更多内容或结束）
                 printedAny = true;
                 lastOutput = extracted; // 更新记录的完整内容
               }
             } else if (extracted !== lastOutput) {
               // 内容完全不一样（这种情况很少），输出全部
-              process.stderr.write(extracted, "utf8");
+              // 先输出当前行（如果有）
+              if (currentLine.length > 0) {
+                const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+                process.stderr.write(boxPrefix + currentLine + "\n", "utf8");
+                currentLine = "";
+              }
+              // 输出新内容
+              const lines = extracted.split(/\r?\n/);
+              const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+              for (let i = 0; i < lines.length - 1; i++) {
+                process.stderr.write(boxPrefix + lines[i] + "\n", "utf8");
+              }
+              currentLine = lines[lines.length - 1];
               printedAny = true;
               lastOutput = extracted;
             }
@@ -1111,8 +1587,17 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId) {
             }
             
             if (extracted && extracted !== "null" && extracted.length > 0) {
-              // 输出到 stderr，避免污染 stdout（JSON 输出）
-              process.stderr.write(extracted, "utf8");
+              // 首次输出时显示 Agent 输出开始标记
+              if (!agentOutputStarted) {
+                logAgentOutputStart(isResume);
+                agentOutputStarted = true;
+              }
+              // 输出内容（带边框前缀）
+              const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+              const lines = extracted.split(/\r?\n/);
+              for (const line of lines) {
+                process.stderr.write(boxPrefix + line + "\n", "utf8");
+              }
               printedAny = true;
             }
           } catch (_) {
@@ -1122,9 +1607,16 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId) {
       }
     }
 
-    // 如果输出了任何内容，添加换行符
-    if (printedAny) {
-      process.stderr.write("\n");
+    // 输出剩余的当前行（如果有）
+    if (currentLine.length > 0) {
+      const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+      process.stderr.write(boxPrefix + currentLine + "\n", "utf8");
+      currentLine = "";
+    }
+
+    // 如果输出了任何内容，显示结束标记
+    if (agentOutputStarted) {
+      logAgentOutputEnd();
     }
 
     // 调用文本收集回调（如果提供）
@@ -1139,7 +1631,7 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId) {
 
     // 仅在DEBUG模式下输出统计信息
     if (process.env.DEBUG === "1") {
-      logStep(7, `流式处理完成: 接收 ${chunkCount} 个数据块, session_id: ${sessionId || "未找到"}`);
+      logDebug(`流式处理完成: 接收 ${chunkCount} 个数据块, session_id: ${sessionId || "未找到"}`);
     }
 
     if (onEnd) {
@@ -1148,7 +1640,10 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId) {
   });
 
   stream.on("error", (err) => {
-    logStep(7, `流式处理错误: ${err.message}`);
+    logError(`流式处理错误: ${err.message}`);
+    if (agentOutputStarted) {
+      logAgentOutputEnd();
+    }
     if (onEnd) {
       onEnd();
     }
@@ -1167,43 +1662,44 @@ async function main() {
     process.exit(0);
   }
 
-  log("=".repeat(60));
-  log("脚本开始执行");
-  log("=".repeat(60));
+  logTitle("Cursor Agent Task Runner", "任务执行脚本");
 
   logStep(1, "解析命令行参数");
   
   // 如果未提供 --judge-model，尝试从环境变量读取
   if (!args.judgeModel && process.env.CURSOR_TASKS_JUDGE_MODEL) {
     args.judgeModel = process.env.CURSOR_TASKS_JUDGE_MODEL;
-    logStep(1, `从环境变量读取 judge-model: ${args.judgeModel}`);
+    logSubStep(`从环境变量读取 judge-model: ${args.judgeModel}`);
   }
   
-  logStep(1, "参数解析完成:", {
-    model: args.model,
-    hasPrompt: !!args.prompt,
-    promptFilesCount: args.promptFiles.length,
-    hasSystemPrompt: !!args.systemPrompt,
-    judgeModel: args.judgeModel || "(未设置)",
-    positionalArgsCount: args.positional.length,
-  });
+  logSubStep(`模型: ${args.model}`);
+  logSubStep(`判定模型: ${args.judgeModel || "(未设置)"}`);
+  logSubStep(`提示词文件: ${args.promptFiles.length} 个`);
+  logSubStep(`系统提示词: ${args.systemPrompt ? "已提供" : "未提供"}`);
+  logSubStep(`直接提示词: ${args.prompt ? "已提供" : "未提供"}`);
+  logSubStep(`透传参数: ${args.positional.length} 个`);
 
   // 验证必需参数
   if (!args.prompt && args.promptFiles.length === 0) {
+    logError("必须提供 --prompt 或 --file 其中之一");
     die(2, "错误: 必须提供 --prompt 或 --file 其中之一");
   }
 
   if (!args.judgeModel) {
+    logError("必须提供 --judge-model 参数（用于语义判定），或设置环境变量 CURSOR_TASKS_JUDGE_MODEL");
     die(2, "错误: 必须提供 --judge-model 参数（用于语义判定），或设置环境变量 CURSOR_TASKS_JUDGE_MODEL");
   }
 
   const userPrompt = await buildUserPrompt(args.prompt, args.promptFiles);
 
-  logStep(4, "合并提示词");
+  logStep(4, "构建最终提示词");
   const combinedPrompt = args.systemPrompt
     ? `${args.systemPrompt}\n\n${userPrompt}`
     : userPrompt;
-  logStep(4, "提示词合并完成，总长度:", combinedPrompt.length, "字符");
+  logSubStep(`总长度: ${combinedPrompt.length} 字符`);
+  if (args.systemPrompt) {
+    logDetail(`包含系统提示词`);
+  }
 
   // 执行任务循环
   const result = await executeTaskWithRetry(
@@ -1215,14 +1711,28 @@ async function main() {
     args.positional
   );
 
+  // 输出执行结果汇总
+  logTitle("执行结果汇总");
+  const statusText = result.success ? "成功完成" : 
+                     result.finalStatus === "partial" ? "部分完成" :
+                     result.finalStatus === "error" ? "执行失败" : "未知状态";
+  const statusSymbol = result.success ? symbols.check : 
+                       result.finalStatus === "error" ? symbols.cross : symbols.warning;
+  logStatus(`${statusSymbol} 状态: ${statusText}`);
+  logSubStep(`执行次数: ${result.attempts} 次`);
+  if (result.executions.length > 0) {
+    const totalDuration = result.executions.reduce((sum, e) => sum + e.durationMs, 0);
+    logSubStep(`总耗时: ${(totalDuration / 1000).toFixed(1)} 秒`);
+  }
+  if (result.errorMessage) {
+    logError(result.errorMessage);
+  }
+
   // 输出 JSON 格式的执行结果到 stdout
   console.log(JSON.stringify(result, null, 2));
 
   // 根据结果设置退出码
   const exitCode = result.success ? 0 : 1;
-  log("=".repeat(60));
-  log("脚本执行完成");
-  log("=".repeat(60));
   process.exit(exitCode);
 }
 
@@ -1277,7 +1787,6 @@ function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
       runArgs = runArgs.concat(positionalArgs);
     }
 
-    logStep(7, "启动 cursor-agent 子进程（首次执行）");
   const child = spawn("cursor-agent", runArgs, {
     stdio: ["pipe", "pipe", "pipe"],
     encoding: "utf8",
@@ -1290,6 +1799,8 @@ function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
     let stderr = "";
     let isClosed = false;
     let extractedSessionId = null; // 保存提取到的 session_id
+    let agentOutputStarted = false; // 是否已显示 Agent 输出开始标记
+    let agentErrorStarted = false; // 是否已显示 Agent 错误输出开始标记
 
     const safeWrite = (stream, text) => {
       if (!isClosed && stream && !stream.destroyed && stream.writable) {
@@ -1304,7 +1815,20 @@ function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
   child.stderr.on("data", (d) => {
       const text = d.toString();
       stderr += text;
-      safeWrite(process.stderr, d);
+      // 显示错误输出边框
+      if (!agentErrorStarted) {
+        logAgentErrorStart();
+        agentErrorStarted = true;
+      }
+      // 输出错误内容（带边框前缀）
+      const lines = text.split(/\r?\n/);
+      const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.red);
+      for (const line of lines.slice(0, -1)) {
+        safeWrite(process.stderr, boxPrefix + line + "\n");
+      }
+      if (lines[lines.length - 1]) {
+        safeWrite(process.stderr, boxPrefix + lines[lines.length - 1]);
+      }
   });
 
   if (useStdinFallback) {
@@ -1325,13 +1849,27 @@ function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
     }, (sessionIdFromStream) => {
         // 收集提取的 session_id
         extractedSessionId = sessionIdFromStream;
-    });
+    }, false); // 首次执行，不是 resume
   } else {
     child.stdout.on("data", (d) => {
         const text = d.toString();
         stdout += text;
-        // 输出到 stderr，避免污染 stdout（JSON 输出）
-        safeWrite(process.stderr, d);
+        
+        // 首次输出时显示 Agent 输出开始标记
+        if (!agentOutputStarted) {
+          logAgentOutputStart(false);
+          agentOutputStarted = true;
+        }
+        
+        // 输出内容（带边框前缀）
+        const lines = text.split(/\r?\n/);
+        const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
+        for (const line of lines.slice(0, -1)) {
+          safeWrite(process.stderr, boxPrefix + line + "\n");
+        }
+        if (lines[lines.length - 1]) {
+          safeWrite(process.stderr, boxPrefix + lines[lines.length - 1]);
+        }
         
         // 尝试从输出中提取 session_id
         try {
@@ -1365,6 +1903,15 @@ function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
     child.on("close", (code) => {
       isClosed = true;
       clearTimeout(timeoutId);
+      
+      // 关闭输出边框
+      if (agentOutputStarted) {
+        logAgentOutputEnd();
+      }
+      if (agentErrorStarted) {
+        logAgentErrorEnd();
+      }
+      
       const durationMs = Date.now() - startTime;
       resolve({
         exitCode: code ?? 0,
@@ -1378,6 +1925,15 @@ function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
     child.on("error", (err) => {
       isClosed = true;
       clearTimeout(timeoutId);
+      
+      // 关闭输出边框
+      if (agentOutputStarted) {
+        logAgentOutputEnd();
+      }
+      if (agentErrorStarted) {
+        logAgentErrorEnd();
+      }
+      
       reject(err);
     });
   });
@@ -1402,28 +1958,29 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
   let lastSemanticsResult = null; // 保存上次的语义判定结果
   let sessionId = null; // 保存 session_id
 
-  logStep(12, "开始任务执行循环");
-  logStep(12, `最大重试次数: ${retry}, 每次超时: ${timeoutMinutes} 分钟`);
+  logTitle("任务执行循环", `最大重试: ${retry} 次 | 超时: ${timeoutMinutes} 分钟`);
 
   while (needsContinue && attempts < retry) {
     attempts++;
-    logStep(12, `第 ${attempts} 次执行开始`);
+    logStep(attempts, `执行 ${attempts}/${retry}`);
 
     try {
       let result;
       
       if (attempts === 1) {
         // 首次执行：使用 cursor-agent（非 resume）
+        logSubStep("调用 cursor-agent (首次执行)");
+        logDetail(`模型: ${model}`);
         result = await runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes);
         // 保存首次执行获取的 session_id
         if (result.sessionId) {
           sessionId = result.sessionId;
-          logStep(12, `提取到 session_id: ${sessionId}`);
+          logSuccess(`提取到 session_id: ${sessionId}`);
         }
       } else {
         // 后续执行：使用 cursor-agent resume
         if (!sessionId) {
-          logStep(12, "错误: 未找到 session_id，无法继续执行");
+          logError("未找到 session_id，无法继续执行");
           errorMessage = "未找到 session_id，无法继续执行";
           finalStatus = "error";
           break;
@@ -1434,19 +1991,23 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
           ? "按你的建议执行"
           : "请继续";
         
-        logStep(12, `使用 resume 模式继续执行: session_id=${sessionId}, prompt="${resumePrompt}"`);
+        logSubStep("调用 cursor-agent resume");
+        logDetail(`session_id: ${sessionId}`);
+        logDetail(`提示词: "${resumePrompt}"`);
         result = await runCursorAgentResume(model, sessionId, resumePrompt, timeoutMinutes);
         
         // 更新 session_id（可能更新）
-        if (result.sessionId) {
+        if (result.sessionId && result.sessionId !== sessionId) {
           sessionId = result.sessionId;
-          logStep(12, `更新 session_id: ${sessionId}`);
+          logDetail(`更新 session_id: ${sessionId}`);
         }
       }
 
+      logSubStep(`执行时长: ${(result.durationMs / 1000).toFixed(1)} 秒`);
+
       // 检查运行时错误
       if (result.exitCode !== 0 || result.stderr) {
-        logStep(12, `检测到运行时错误: 退出码 ${result.exitCode}`);
+        logError(`运行时错误: 退出码 ${result.exitCode}`);
         const fullError = `运行时错误: 退出码 ${result.exitCode}\n${result.stderr || "无错误输出"}\n\n标准输出:\n${result.stdout}`;
         errorMessage = fullError.substring(0, 200);
         finalStatus = "error";
@@ -1460,7 +2021,7 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
       }
 
       // 进行语义判定
-      logStep(12, "进行语义判定");
+      logSubStep("进行语义判定");
       const executionSummary = result.stdout.substring(0, 5000);
       const semanticsResult = await interpretSemanticsViaLLM(judgeModel, executionSummary);
       
@@ -1483,17 +2044,24 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
 
       // 根据结果处理
       if (semanticsResult.result === "done") {
-        logStep(12, "任务已完成");
+        logSuccess("任务已完成");
         finalStatus = "done";
         needsContinue = false;
         break;
       } else {
         // resume 或 auto：标记需要继续
         needsContinue = true;
-        logStep(12, `需要继续执行 (${semanticsResult.result})`);
+        if (semanticsResult.result === "auto") {
+          logWarning("建议继续执行");
+        } else {
+          logWarning("需要继续执行");
+        }
+        if (attempts < retry) {
+          logFlow(`准备第 ${attempts + 1} 次执行...`);
+        }
       }
     } catch (err) {
-      logStep(12, `执行出错: ${err.message}`);
+      logError(`执行出错: ${err.message}`);
       errorMessage = err.message;
       finalStatus = "error";
       executions.push({
@@ -1508,7 +2076,7 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
 
   // 如果达到重试上限仍未完成
   if (needsContinue && attempts >= retry) {
-    logStep(12, `达到重试上限(${retry}),标记为部分完成`);
+    logWarning(`达到重试上限(${retry})，标记为部分完成`);
     finalStatus = "partial";
   }
 
