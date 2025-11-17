@@ -1766,13 +1766,22 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
                     if (currentLine.length === 0) {
                       // 如果当前行是空的，说明标签刚显示，直接设置内容
                       currentLine = lines[i];
+                      // 如果内容很短不需要换行，立即输出（确保用户提示词能显示）
+                      if (currentLine.length <= maxContentWidth) {
+                        if (lines.length === 1) {
+                          // 单行且不需要换行，立即输出
+                          process.stderr.write(boxPrefix + userLabel + colorize(currentLine, colors.gray, colors.dim) + "\n", "utf8");
+                          currentLine = "";
+                        }
+                        // 如果是多行，第一行暂时保留在 currentLine 中，等待后续处理
+                      }
                     } else {
                       // 如果当前行已有内容，追加
                       currentLine += lines[i];
                     }
                     
-                    // 检查是否需要换行
-                    if (currentLine.length > maxContentWidth) {
+                    // 检查是否需要换行（只有在 currentLine 不为空时才检查）
+                    if (currentLine.length > 0 && currentLine.length > maxContentWidth) {
                       const wrapped = wrapTextForAgentOutput(currentLine, boxWidth, prefixLength);
                       // 输出第一行（带标签）
                       if (wrapped.length > 0) {
