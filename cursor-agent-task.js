@@ -1414,13 +1414,26 @@ function extractAssistantText(jsonObj) {
     return "";
   }
 
+  // 只处理 assistant 类型的消息，排除 user 和 system 类型
+  // 检查 type 字段
+  if (jsonObj.type === "user" || jsonObj.type === "system") {
+    return "";
+  }
+  
+  // 检查 message.role 字段（如果存在）
+  if (jsonObj.message && jsonObj.message.role === "user") {
+    return "";
+  }
+
   const parts = [];
   const seen = new Set(); // 用于去重，避免重复添加相同的内容
 
   // Cursor Agent 实际格式：message.content[].text
   // 这是最优先的格式，因为这是 cursor-agent 实际使用的格式
+  // 只处理 role === "assistant" 的消息
   if (
     jsonObj.message &&
+    jsonObj.message.role === "assistant" &&
     jsonObj.message.content &&
     Array.isArray(jsonObj.message.content)
   ) {
@@ -1454,8 +1467,10 @@ function extractAssistantText(jsonObj) {
   }
 
   // 如果 message.content 是字符串（不是数组）
+  // 只处理 role === "assistant" 的消息
   if (
     jsonObj.message &&
+    jsonObj.message.role === "assistant" &&
     typeof jsonObj.message.content === "string" &&
     jsonObj.message.content !== null &&
     jsonObj.message.content !== ""
@@ -1505,9 +1520,11 @@ function extractAssistantText(jsonObj) {
     }
   }
 
-  // 如果是其他类型但有 content 字段，也提取（但跳过 system 类型的初始化消息）
+  // 如果是其他类型但有 content 字段，也提取（但跳过 system 和 user 类型）
+  // 注意：只提取 assistant 相关类型，避免提取用户消息
   if (
     jsonObj.type !== "system" &&
+    jsonObj.type !== "user" &&
     typeof jsonObj.content === "string" &&
     jsonObj.content !== null &&
     jsonObj.content !== ""
@@ -1638,6 +1655,7 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
   let currentLine = ""; // 当前正在输出的行（用于处理换行）
   let currentSection = null; // 当前区域：'user' | 'assistant' | null
   let userPromptDisplayed = false; // 用户提示词是否已显示
+  let knownUserPrompts = new Set(); // 记录已知的用户提示词，用于过滤 assistant 输出
 
   // 直接监听 data 事件，因为流式数据可能不是完整的行
   stream.on("data", (chunk) => {
@@ -1701,6 +1719,9 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
           // 处理用户提示词
           const userText = extractUserText(obj);
           if (userText && userText !== "null" && userText.length > 0) {
+            // 记录用户提示词，用于后续过滤 assistant 输出
+            knownUserPrompts.add(userText.trim());
+            
             // 首次输出时显示 Agent 输出开始标记
             if (!agentOutputStarted) {
               logAgentOutputStart(isResume);
@@ -1808,7 +1829,24 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
           }
 
           // 处理 Agent 回复
-          const assistantText = extractAssistantText(obj);
+          let assistantText = extractAssistantText(obj);
+          
+          // 过滤掉已知的用户提示词（避免重复显示）
+          if (assistantText && assistantText !== "null" && assistantText.length > 0) {
+            // 检查 assistant 文本是否以用户提示词开头
+            for (const userPrompt of knownUserPrompts) {
+              if (userPrompt && assistantText.trim().startsWith(userPrompt.trim())) {
+                // 移除开头的用户提示词
+                assistantText = assistantText.trim().substring(userPrompt.trim().length).trim();
+                // 如果移除后为空，跳过输出
+                if (!assistantText) {
+                  assistantText = "";
+                  break;
+                }
+              }
+            }
+          }
+          
           if (assistantText && assistantText !== "null" && assistantText.length > 0) {
             // 首次输出时显示 Agent 输出开始标记
             if (!agentOutputStarted) {
@@ -1923,14 +1961,16 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
           // DEBUG模式下输出详细信息
           if (process.env.DEBUG === "1") {
             const objType = obj.type || "unknown";
+            const extractedText = assistantText || userText || "";
+            const lastOutputText = currentSection === "assistant" ? lastAssistantOutput : lastUserOutput;
             logStep(
               7,
-              `处理JSON: type=${objType}, 提取长度=${extracted.length}, 上次长度=${lastOutput.length}`
+              `处理JSON: type=${objType}, 提取长度=${extractedText.length}, 上次长度=${lastOutputText.length}`
             );
-            if (extracted.length > 0) {
-              const newPart = extracted.startsWith(lastOutput)
-                ? extracted.slice(lastOutput.length)
-                : extracted;
+            if (extractedText.length > 0) {
+              const newPart = extractedText.startsWith(lastOutputText)
+                ? extractedText.slice(lastOutputText.length)
+                : extractedText;
               if (newPart.length > 0) {
                 logStep(
                   7,
