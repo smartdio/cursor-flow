@@ -346,9 +346,9 @@ const CURRENT_LOG_LEVEL = LOG_LEVELS[process.env.LOG_LEVEL || "info"] || LOG_LEV
  */
 function log(message, ...args) {
   if (CURRENT_LOG_LEVEL >= LOG_LEVELS.info) {
-    const timestamp = new Date().toISOString();
-    const prefix = `[${timestamp}]`;
-    console.error(prefix, message, ...args);
+  const timestamp = new Date().toISOString();
+  const prefix = `[${timestamp}]`;
+  console.error(prefix, message, ...args);
   }
 }
 
@@ -1656,6 +1656,7 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
   let currentSection = null; // 当前区域：'user' | 'assistant' | null
   let userPromptDisplayed = false; // 用户提示词是否已显示
   let knownUserPrompts = new Set(); // 记录已知的用户提示词，用于过滤 assistant 输出
+  let agentLabelDisplayed = false; // Agent 标签是否已在当前输出块中显示
 
   // 直接监听 data 事件，因为流式数据可能不是完整的行
   stream.on("data", (chunk) => {
@@ -1770,7 +1771,13 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
                       if (currentLine.length <= maxContentWidth) {
                         if (lines.length === 1) {
                           // 单行且不需要换行，立即输出
-                          process.stderr.write(boxPrefix + userLabel + colorize(currentLine, colors.gray, colors.dim) + "\n", "utf8");
+                          // 如果标签还没显示，带标签；否则只带边框前缀
+                          if (!userPromptDisplayed) {
+                            process.stderr.write(boxPrefix + userLabel + colorize(currentLine, colors.gray, colors.dim) + "\n", "utf8");
+                            userPromptDisplayed = true;
+                          } else {
+                            process.stderr.write(boxPrefix + colorize(currentLine, colors.gray, colors.dim) + "\n", "utf8");
+                          }
                           currentLine = "";
                         }
                         // 如果是多行，第一行暂时保留在 currentLine 中，等待后续处理
@@ -1783,9 +1790,14 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
                     // 检查是否需要换行（只有在 currentLine 不为空时才检查）
                     if (currentLine.length > 0 && currentLine.length > maxContentWidth) {
                       const wrapped = wrapTextForAgentOutput(currentLine, boxWidth, prefixLength);
-                      // 输出第一行（带标签）
+                      // 输出第一行（如果标签还没显示，带标签；否则只带边框前缀）
                       if (wrapped.length > 0) {
-                        process.stderr.write(boxPrefix + userLabel + colorize(wrapped[0], colors.gray, colors.dim) + "\n", "utf8");
+                        if (!userPromptDisplayed) {
+                          process.stderr.write(boxPrefix + userLabel + colorize(wrapped[0], colors.gray, colors.dim) + "\n", "utf8");
+                          userPromptDisplayed = true;
+                        } else {
+                          process.stderr.write(boxPrefix + colorize(wrapped[0], colors.gray, colors.dim) + "\n", "utf8");
+                        }
                         currentLine = wrapped.slice(1).join(" ") || "";
                       }
                     }
@@ -1872,6 +1884,8 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
                 currentLine = "";
               }
               process.stderr.write(colorize(symbols.agentBox.vertical + " ", colors.blue) + "\n", "utf8");
+              // 切换区域时重置标签显示标志
+              agentLabelDisplayed = false;
             }
             
             // cursor-agent 流式输出通常是累积式的：每个 JSON 包含完整的累积内容
@@ -1880,12 +1894,10 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
               // 增量更新：只输出新增的部分
               const newPart = assistantText.slice(lastAssistantOutput.length);
               if (newPart.length > 0) {
-                // 显示 Agent 标签（如果还没显示或刚切换）
+                // 显示 Agent 标签（只在切换区域或新输出块的第一行显示）
                 if (currentSection !== "assistant") {
-                  const agentLabel = colorize(symbols.agentLabel + " ", colors.blue);
-                  const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
-                  process.stderr.write(boxPrefix + agentLabel, "utf8");
                   currentSection = "assistant";
+                  agentLabelDisplayed = false; // 重置标志
                 }
                 
                 // 处理换行，为每一行添加边框前缀（标签只在第一行显示）
@@ -1900,24 +1912,48 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
                   if (i === 0) {
                     // 第一行追加到当前行
                     if (currentLine.length === 0) {
-                      // 如果当前行是空的，说明标签刚显示，直接设置内容
+                      // 如果当前行是空的，说明是新行开始
                       currentLine = lines[i];
+                      // 如果这是新输出块的第一行且标签还没显示，立即输出带标签
+                      if (!agentLabelDisplayed && currentLine.length > 0) {
+                        // 立即输出第一行（带标签）
+                        if (currentLine.length <= maxContentWidth && lines.length === 1) {
+                          // 单行且不需要换行，立即输出带标签
+                          process.stderr.write(boxPrefix + agentLabel + currentLine + "\n", "utf8");
+                          currentLine = "";
+                          agentLabelDisplayed = true;
+                        } else if (currentLine.length > maxContentWidth) {
+                          // 需要换行，输出第一行（带标签）
+                          const wrapped = wrapTextForAgentOutput(currentLine, boxWidth, prefixLength);
+                          if (wrapped.length > 0) {
+                            process.stderr.write(boxPrefix + agentLabel + wrapped[0] + "\n", "utf8");
+                            agentLabelDisplayed = true;
+                            currentLine = wrapped.slice(1).join(" ") || "";
+                          }
+                        }
+                        // 如果不需要立即输出，currentLine 已设置，等待后续处理
+                      }
                     } else {
-                      // 如果当前行已有内容，追加
+                      // 如果当前行已有内容，追加（这种情况说明是增量更新，标签应该已经显示）
                       currentLine += lines[i];
-                    }
-                    
-                    // 检查是否需要换行
-                    if (currentLine.length > maxContentWidth) {
-                      const wrapped = wrapTextForAgentOutput(currentLine, boxWidth, prefixLength);
-                      // 输出第一行（带标签）
-                      if (wrapped.length > 0) {
-                        process.stderr.write(boxPrefix + agentLabel + wrapped[0] + "\n", "utf8");
-                        currentLine = wrapped.slice(1).join(" ") || "";
+                      // 检查是否需要换行
+                      if (currentLine.length > maxContentWidth) {
+                        const wrapped = wrapTextForAgentOutput(currentLine, boxWidth, 2); // 只有边框前缀，没有标签
+                        if (wrapped.length > 0) {
+                          process.stderr.write(boxPrefix + wrapped[0] + "\n", "utf8");
+                          currentLine = wrapped.slice(1).join(" ") || "";
+                        }
                       }
                     }
+                    
+                    // 如果 currentLine 还没输出且需要输出（标签已显示的情况）
+                    if (currentLine.length > 0 && agentLabelDisplayed && currentLine.length <= maxContentWidth && lines.length === 1) {
+                      // 单行且不需要换行，立即输出（不带标签，因为标签已显示）
+                      process.stderr.write(boxPrefix + currentLine + "\n", "utf8");
+                      currentLine = "";
+                    }
                   } else {
-                    // 输出完整行（只带边框前缀，标签只在第一行显示）
+                    // 后续行：先输出当前行（如果有），然后处理新行
                     if (currentLine.length > 0) {
                       // 检查是否需要换行
                       if (currentLine.length > maxContentWidth) {
@@ -1927,6 +1963,7 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
                         }
                         currentLine = "";
                       } else {
+                        // 输出当前行（只带边框前缀，不显示标签）
                         process.stderr.write(boxPrefix + currentLine + "\n", "utf8");
                         currentLine = "";
                       }
@@ -1950,12 +1987,19 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
                 currentLine = "";
               }
               
-              // 显示 Agent 标签
+              // 重置标签显示标志（新输出块）
+              agentLabelDisplayed = false;
               const agentLabel = colorize(symbols.agentLabel + " ", colors.blue);
               const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
               const lines = assistantText.split(/\r?\n/);
+              // 第一行显示标签，后续行只显示边框前缀
               for (let i = 0; i < lines.length - 1; i++) {
-                process.stderr.write(boxPrefix + agentLabel + lines[i] + "\n", "utf8");
+                if (i === 0 && !agentLabelDisplayed) {
+                  process.stderr.write(boxPrefix + agentLabel + lines[i] + "\n", "utf8");
+                  agentLabelDisplayed = true;
+                } else {
+                  process.stderr.write(boxPrefix + lines[i] + "\n", "utf8");
+                }
               }
               if (lines.length > 0) {
                 currentLine = lines[lines.length - 1];
@@ -2062,13 +2106,18 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
     // 输出剩余的当前行（如果有）
     if (currentLine.length > 0) {
       const boxPrefix = colorize(symbols.agentBox.vertical + " ", colors.blue);
-      let label = "";
       if (currentSection === "user") {
-        label = colorize(symbols.userLabel + " ", colors.gray, colors.dim);
+        const label = colorize(symbols.userLabel + " ", colors.gray, colors.dim);
         process.stderr.write(boxPrefix + label + colorize(currentLine, colors.gray, colors.dim) + "\n", "utf8");
       } else if (currentSection === "assistant") {
-        label = colorize(symbols.agentLabel + " ", colors.blue);
-        process.stderr.write(boxPrefix + label + currentLine + "\n", "utf8");
+        // 如果标签还没显示，显示标签；否则只显示边框前缀
+        if (!agentLabelDisplayed) {
+          const label = colorize(symbols.agentLabel + " ", colors.blue);
+          process.stderr.write(boxPrefix + label + currentLine + "\n", "utf8");
+          agentLabelDisplayed = true;
+        } else {
+          process.stderr.write(boxPrefix + currentLine + "\n", "utf8");
+        }
       } else {
         process.stderr.write(boxPrefix + currentLine + "\n", "utf8");
       }
