@@ -5,14 +5,17 @@
   "tasks": [
     {
       "name": "编写说明文档1",
-      "description": "编写说明文档1",
+      "prompt": "编写 cursor-tasks 的说明文档, 文档保存在 .flow/doc",
+      "status": "pending"
+    },
+    {
+      "name": "编写说明文档1",
       "prompt": "编写 cursor-tasks 的说明文档, 文档保存在 .flow/doc",
       "status": "done",
       "report": "doc/tasks/report/编写说明文档1_2025-11-02T02-39-24.md"
     },
     {
       "name": "检查文档的完整性",
-      "description": "检查文档的完整性",
       "spec_file": [
         ".flow/spec/check-doc.md"
       ],
