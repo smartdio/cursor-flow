@@ -861,8 +861,40 @@ async function save_task_file(taskFilePath, config) {
 // ============================================================================
 
 /**
+ * 验证 task.json 示例文件格式是否正确
+ * @param {string} filePath - 文件路径
+ * @returns {Promise<{valid: boolean, error?: string}>}
+ */
+async function validate_example_task_file(filePath) {
+  try {
+    const content = await fsp.readFile(filePath, "utf8");
+    const config = JSON.parse(content);
+    
+    // 检查基本结构
+    if (!config.tasks || !Array.isArray(config.tasks)) {
+      return { valid: false, error: "缺少 tasks 数组" };
+    }
+    
+    // 检查每个任务是否包含 id 字段
+    for (let i = 0; i < config.tasks.length; i++) {
+      const task = config.tasks[i];
+      if (task.id === undefined || task.id === null) {
+        return { valid: false, error: `任务 ${i + 1} (${task.name || "未命名"}) 缺少 id 字段` };
+      }
+      if (typeof task.id !== "string" || task.id.trim().length === 0) {
+        return { valid: false, error: `任务 ${i + 1} (${task.name || "未命名"}) 的 id 字段无效` };
+      }
+    }
+    
+    return { valid: true };
+  } catch (err) {
+    return { valid: false, error: `解析失败: ${err.message}` };
+  }
+}
+
+/**
  * 初始化 .flow 目录
- * 创建 .flow/.env.example 和 .flow/task.json 文件
+ * 创建 .flow/.env.example、.flow/task.json 和报告目录
  * @param {string} [cwd] - 工作目录（默认: process.cwd()）
  * @returns {Promise<void>}
  */
@@ -870,6 +902,7 @@ async function init_flow_directory(cwd = process.cwd()) {
   printHeader("初始化 .flow 目录", icons.gear);
 
   const flowDir = path.join(cwd, ".flow");
+  const reportDir = path.join(flowDir, "tasks", "report");
   const envExamplePath = path.join(flowDir, ".env.example");
   const taskJsonPath = path.join(flowDir, "task.json");
   const taskJsonExamplePath = path.join(cwd, "doc", "task.json.example");
@@ -883,6 +916,17 @@ async function init_flow_directory(cwd = process.cwd()) {
       throw new Error(`创建 .flow 目录失败: ${err.message}`);
     }
     logInfo(`目录已存在: ${colorize(".flow", "dim")}`);
+  }
+
+  // 创建报告目录（如果不存在）
+  try {
+    await fsp.mkdir(reportDir, { recursive: true });
+    logSuccess(`目录已创建: ${colorize(".flow/tasks/report", "cyan")}`);
+  } catch (err) {
+    if (err.code !== "EEXIST") {
+      throw new Error(`创建报告目录失败: ${err.message}`);
+    }
+    logInfo(`目录已存在: ${colorize(".flow/tasks/report", "dim")}`);
   }
 
   // 创建 .env.example 文件（如果不存在）
@@ -911,23 +955,54 @@ TASKECHO_ENABLED=false
   // 创建 task.json 文件（如果不存在）
   if (!fs.existsSync(taskJsonPath)) {
     let taskJsonContent;
+    let useExampleFile = false;
     
-    // 如果存在示例文件，使用示例文件内容
+    // 如果存在示例文件，验证并使用示例文件内容
     if (fs.existsSync(taskJsonExamplePath)) {
-      taskJsonContent = await fsp.readFile(taskJsonExamplePath, "utf8");
-      logInfo(`使用示例文件: ${colorize("doc/task.json.example", "cyan")}`);
-    } else {
-      // 否则创建默认的 task.json
+      const validation = await validate_example_task_file(taskJsonExamplePath);
+      if (validation.valid) {
+        taskJsonContent = await fsp.readFile(taskJsonExamplePath, "utf8");
+        logSuccess(`使用示例文件: ${colorize("doc/task.json.example", "cyan")}`);
+        useExampleFile = true;
+      } else {
+        logWarning(`示例文件格式验证失败: ${validation.error}`);
+        logInfo(`将使用默认模板替代`);
+      }
+    }
+    
+    // 如果示例文件不存在或验证失败，使用默认模板
+    if (!useExampleFile) {
       taskJsonContent = JSON.stringify({
         prompts: [],
         tasks: [
           {
-            name: "示例任务",
+            id: "1",
+            name: "示例任务1",
+            description: "这是一个示例任务，用于演示 task.json 的格式",
+            spec_file: "doc/specs/example-task-1.md",
             prompt: "请完成这个示例任务",
+            status: "pending"
+          },
+          {
+            id: "2",
+            name: "示例任务2",
+            description: "另一个示例任务，演示多个 spec 文件",
+            spec_file: [
+              "doc/specs/example-task-2-part1.md",
+              "doc/specs/example-task-2-part2.md"
+            ],
+            status: "pending"
+          },
+          {
+            id: "3",
+            name: "示例任务3",
+            description: "演示仅使用 prompt 而不使用 spec_file 的任务",
+            prompt: "请帮我生成一个简单的 Hello World 程序",
             status: "pending"
           }
         ]
       }, null, 2) + "\n";
+      logInfo(`使用默认模板创建 task.json`);
     }
     
     await fsp.writeFile(taskJsonPath, taskJsonContent, "utf8");
@@ -939,9 +1014,17 @@ TASKECHO_ENABLED=false
   console.error("");
   printSeparator();
   logSuccess(`初始化完成！`);
-  logInfo(`下一步:`);
+  console.error("");
+  logInfo(`${colorize("下一步:", "bright")}`);
   logInfo(`  1. 复制 ${colorize(".flow/.env.example", "cyan")} 为 ${colorize(".flow/.env", "cyan")} 并填入实际值`);
   logInfo(`  2. 编辑 ${colorize(".flow/task.json", "cyan")} 配置你的任务`);
+  console.error("");
+  logInfo(`${colorize("重要提示:", "bright")}`);
+  logInfo(`  • 每个任务必须包含 ${colorize("id", "yellow")} 字段（必填，在队列内唯一）`);
+  logInfo(`  • 任务必须提供 ${colorize("prompt", "yellow")} 或 ${colorize("spec_file", "yellow")} 至少其中一个`);
+  logInfo(`  • 执行报告将保存在 ${colorize(".flow/tasks/report", "cyan")} 目录`);
+  logInfo(`  • TaskEcho 集成（可选）：在 ${colorize(".flow/.env", "cyan")} 中设置 TASKECHO_ENABLED=true 启用`);
+  logInfo(`  • TaskEcho 项目 ID 会在首次推送时自动生成并保存到 ${colorize(".flow/.taskecho_project_id", "cyan")}`);
   printSeparator();
 }
 
