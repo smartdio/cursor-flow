@@ -5,6 +5,7 @@
   ],
   "tasks": [
     {
+      "id": "1",
       "name": "示例任务1",
       "description": "这是一个示例任务，用于演示 task.json 的格式",
       "spec_file": "doc/specs/example-task-1.md",
@@ -12,6 +13,7 @@
       "status": "pending"
     },
     {
+      "id": "2",
       "name": "示例任务2",
       "description": "另一个示例任务，演示多个 spec 文件",
       "spec_file": [
@@ -21,6 +23,7 @@
       "status": "pending"
     },
     {
+      "id": "3",
       "name": "示例任务3",
       "description": "演示仅使用 prompt 而不使用 spec_file 的任务",
       "prompt": "请帮我生成一个简单的 Hello World 程序",

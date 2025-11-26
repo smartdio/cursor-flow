@@ -110,9 +110,10 @@ cursor-tasks [选项]
 - `CURSOR_TASKS_JUDGE_MODEL` 语义判定模型（如果未通过 --judge-model 提供）
 
 **环境变量文件：**
-- 如果当前执行目录下存在 `.cursor.env` 文件，程序会自动加载其中的环境变量
-- `.cursor.env` 文件格式：`KEY=value`，支持注释（以 `#` 开头）和空行
-- 已存在的环境变量不会被 `.cursor.env` 文件覆盖（优先使用系统环境变量）
+- 如果当前执行目录下存在 `.flow/.env` 文件，程序会自动加载其中的环境变量
+- `.flow/.env` 文件格式：`KEY=value`，支持注释（以 `#` 开头）和空行
+- 已存在的环境变量不会被 `.flow/.env` 文件覆盖（优先使用系统环境变量）
+- 运行 `cursor-tasks init` 会创建 `.flow/.env.example` 文件作为配置示例
 
 **示例：**
 ```bash
@@ -226,14 +227,83 @@ npm unlink -g @n8flow/cursor-flow
 
 详细的格式说明请参考 [.flow/README.md](.flow/README.md)。
 
+### task.json 格式要求
+
+**重要更新**：为了支持 TaskEcho 集成，`task.json` 中的每个任务对象**必须**包含 `id` 字段：
+
+```json
+{
+  "prompts": [".flow/skills/global.md"],
+  "tasks": [
+    {
+      "id": "1",  // 必填：任务ID（在队列内唯一）
+      "name": "任务名称",
+      "prompt": "任务提示文本",
+      "status": "pending"
+    }
+  ]
+}
+```
+
+- `id` 字段是**必填的**，必须从 task.json 文件中读取
+- `id` 必须在队列内唯一，不能重复
+- `id` 格式要求：字符串，长度 1-255 字符，不能为空字符串
+- 如果任务缺少 `id` 字段，验证时会抛出错误，任务执行会被中断
+
+## TaskEcho 集成
+
+`cursor-tasks` 支持与 TaskEcho 服务集成，可以将任务队列、执行消息、状态更新和日志推送到 TaskEcho 服务器。
+
+### 配置 TaskEcho
+
+在 `.flow/.env` 文件中配置以下环境变量：
+
+```bash
+# TaskEcho 服务配置（可选）
+TASKECHO_API_URL=http://localhost:3000        # TaskEcho API 服务地址
+TASKECHO_API_KEY=sk-xxxxxxxxxxxxxxxx          # TaskEcho API Key
+TASKECHO_ENABLED=true                         # 是否启用 TaskEcho 集成（true/false）
+```
+
+**参数说明：**
+
+| 参数名 | 必填 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `TASKECHO_API_URL` | 否 | `http://localhost:3000` | TaskEcho 服务的 API 地址 |
+| `TASKECHO_API_KEY` | 是（启用时） | 空字符串 | TaskEcho 服务的 API Key，用于认证 |
+| `TASKECHO_ENABLED` | 否 | `false` | 是否启用 TaskEcho 集成，设置为 `true` 时才会推送数据 |
+
+**注意事项：**
+- 如果不启用 TaskEcho，可以不配置这些参数，或设置 `TASKECHO_ENABLED=false`
+- 启用时，`TASKECHO_API_KEY` 必须配置，否则不会推送数据
+- 运行 `cursor-tasks init` 会创建 `.flow/.env.example` 文件，包含这些配置的示例
+
+### TaskEcho 功能
+
+启用 TaskEcho 后，`cursor-tasks` 会自动执行以下操作：
+
+1. **队列推送**：在开始执行任务列表时，推送项目信息和整个任务队列到服务器
+2. **用户消息推送**：任务开始执行时，推送用户消息（任务的 prompt）
+3. **AI 回复推送**：cursor-agent-task 执行完成后，推送 AI 回复消息
+4. **状态更新推送**：任务状态变化时，推送状态更新消息
+5. **日志推送**：在关键日志点（任务开始、完成、失败）推送日志信息
+6. **重置操作推送**：执行 `reset` 或 `reset-error` 指令时，推送更新后的队列状态
+
+**项目 UUID 管理：**
+- 首次推送时会自动生成项目 UUID，并保存到 `.flow/.taskecho_project_id` 文件
+- 后续推送会复用相同的 UUID，确保项目标识的一致性
+- 该文件已添加到 `.gitignore`，不会提交到版本控制
+
+详细的集成方案请参考 [.flow/spec/taskecho-integration.md](.flow/spec/taskecho-integration.md)。
+
 ## 注意事项
 
 - 确保已安装 `cursor-agent` 命令并在 PATH 中
 - `cursor-tasks` 依赖于 `cursor-agent-task` 和 `call-llm`，这些脚本需要在同一目录中
 - 通过 npx 使用时，文件会被临时提取，但脚本之间的相互引用仍然可以正常工作
-- 任务配置文件 `task.json` 必须包含 `tasks` 数组，每个任务必须包含 `name` 和 `spec_file` 字段
+- 任务配置文件 `task.json` 必须包含 `tasks` 数组，每个任务必须包含 `name`、`id` 字段，以及 `prompt` 或 `spec_file` 字段之一
 - 执行任务时必须指定 `--judge-model` 参数或设置 `CURSOR_TASKS_JUDGE_MODEL` 环境变量
 - `cursor-tasks` 会使用 `call-llm` 进行语义判定，需要确保已配置 `OPENAI_API_KEY` 或通过 `--api-key` 提供
-- 支持 `.cursor.env` 文件自动加载环境变量，文件应放在执行命令的当前目录下，格式为 `KEY=value`（每行一个）
-- `.cursor.env` 文件中的环境变量不会覆盖已存在的系统环境变量（优先使用系统环境变量）
+- 支持 `.flow/.env` 文件自动加载环境变量，文件应放在 `.flow` 目录下，格式为 `KEY=value`（每行一个）
+- `.flow/.env` 文件中的环境变量不会覆盖已存在的系统环境变量（优先使用系统环境变量）
 

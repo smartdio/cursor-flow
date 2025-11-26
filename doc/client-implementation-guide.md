@@ -9,6 +9,7 @@
 - **项目（Project）**：对应一个代码仓库或工作目录
 - **任务队列（Queue）**：对应一个任务文件（如 `task.json`），一个文件就是一个队列
 - **任务（Task）**：队列中的单个任务项
+- **对话会话（Session）**：客户端与 cursor-agent 交互时的对话会话，通过 `session_id` 标识。一个任务可能包含多个对话会话，每条消息属于一个特定的会话
 
 ### 1.2 数据流程
 
@@ -65,7 +66,14 @@ TaskEcho 服务器创建/更新项目和队列
       "prompt": "任务提示文本",
       "spec_file": [".flow/skills/spcewriter.md"],
       "status": "pending",
-      "report": ".flow/tasks/report/xxx.md"
+      "report": ".flow/tasks/report/xxx.md",
+      "messages": [
+        {
+          "role": "user",
+          "content": "消息内容",
+          "session_id": "session-12345-abcde"
+        }
+      ]
     }
   ]
 }
@@ -90,6 +98,14 @@ TaskEcho 服务器创建/更新项目和队列
 | `report` | string | 否 | 报告文件路径 |
 | `messages` | array[object] | 否 | 对话消息数组（导入时通常为空） |
 | `logs` | array[object] | 否 | 执行日志数组（导入时通常为空） |
+
+**消息对象字段**（`messages` 数组中的对象）：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `role` | string | 是 | 消息角色：`user` 或 `assistant` |
+| `content` | string | 是 | 消息内容（支持 Markdown 格式） |
+| `session_id` | string | 否 | 对话会话ID，客户端与 cursor-agent 交互时的对话会话ID，服务端原样存储，不做校验 |
 
 ---
 
@@ -397,7 +413,13 @@ X-API-Key: <your_api_key>
       "spec_file": [".flow/skills/spcewriter.md"],
       "status": "pending",
       "report": null,
-      "messages": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": "消息内容",
+          "session_id": "session-12345-abcde"
+        }
+      ],
       "logs": []
     }
   ]
@@ -418,6 +440,27 @@ X-API-Key: <your_api_key>
 | `queue_name` | string | 是 | 任务队列显示名称 |
 | `meta` | object | 否 | 元数据信息（如 prompts） |
 | `tasks` | array | 是 | 任务数组 |
+
+**任务对象字段**（`tasks` 数组中的对象）：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `id` | string | 是 | 任务ID（在队列内唯一） |
+| `name` | string | 是 | 任务名称 |
+| `prompt` | string | 是 | 任务提示文本 |
+| `spec_file` | array[string] | 否 | 规范文件路径数组 |
+| `status` | string | 是 | 任务状态：`pending`、`done`、`error` |
+| `report` | string | 否 | 报告文件路径 |
+| `messages` | array[object] | 否 | 对话消息数组 |
+| `logs` | array[object] | 否 | 执行日志数组 |
+
+**消息对象字段**（`tasks[].messages[]` 数组中的对象）：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `role` | string | 是 | 消息角色：`user` 或 `assistant` |
+| `content` | string | 是 | 消息内容（支持 Markdown 格式） |
+| `session_id` | string | 否 | 对话会话ID，客户端与 cursor-agent 交互时的对话会话ID，服务端原样存储，不做校验 |
 
 #### 5.1.4 响应格式
 
@@ -458,32 +501,30 @@ X-API-Key: <your_api_key>
 
 #### 5.2.1 接口信息
 
-- **接口路径**：`POST /api/v1/tasks/:projectId/:queueId/:taskId/message`
+- **接口路径**：`POST /api/v1/tasks/message`
 - **Content-Type**：`application/json`
 - **认证方式**：API Key（请求头：`X-API-Key`）
 - **幂等性**：非幂等（每次调用都会追加新消息）
 
-#### 5.2.2 路径参数
+**重要说明**：所有参数（`project_id`、`queue_id`、`task_id`）都从请求体获取，不使用路径参数，这样可以避免 `queue_id` 包含特殊字符（如文件名路径）时的 URL 编码问题。
 
-| 参数名 | 类型 | 必填 | 说明 | 示例 |
-|--------|------|------|------|------|
-| `projectId` | string | 是 | 项目外部唯一标识（1-255字符） | `"550e8400-e29b-41d4-a716-446655440000"` |
-| `queueId` | string | 是 | 任务队列外部唯一标识（在项目内唯一，1-255字符） | `"task"` |
-| `taskId` | string | 是 | 任务外部唯一标识（在队列内唯一，1-255字符） | `"1"` |
-
-#### 5.2.3 请求头
+#### 5.2.2 请求头
 
 ```
 Content-Type: application/json
 X-API-Key: <your_api_key>
 ```
 
-#### 5.2.4 请求体结构
+#### 5.2.3 请求体结构
 
 ```json
 {
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "queue_id": ".flow/task-test.json",
+  "task_id": "1",
   "role": "user",
-  "content": "请帮我实现登录功能"
+  "content": "请帮我实现登录功能",
+  "session_id": "session-12345-abcde"
 }
 ```
 
@@ -491,8 +532,12 @@ X-API-Key: <your_api_key>
 
 | 字段 | 类型 | 必填 | 说明 | 示例 |
 |------|------|------|------|------|
+| `project_id` | string | 是 | 项目外部唯一标识（1-255字符） | `"550e8400-e29b-41d4-a716-446655440000"` |
+| `queue_id` | string | 是 | 任务队列外部唯一标识（在项目内唯一，1-255字符），支持特殊字符如文件名路径 | `".flow/task-test.json"` |
+| `task_id` | string | 是 | 任务外部唯一标识（在队列内唯一，1-255字符） | `"1"` |
 | `role` | string | 是 | 消息角色，必须是 `user` 或 `assistant`（不区分大小写） | `"user"` |
 | `content` | string | 是 | 消息内容，支持 Markdown 格式，长度 1-100000 字符 | `"请帮我实现登录功能"` |
+| `session_id` | string | 否 | 对话会话ID，客户端与 cursor-agent 交互时的对话会话ID，服务端原样存储，不做校验 | `"session-12345-abcde"` |
 
 #### 5.2.5 响应格式
 
@@ -504,6 +549,7 @@ X-API-Key: <your_api_key>
     "message_id": 0,
     "role": "USER",
     "content": "请帮我实现登录功能",
+    "session_id": "session-12345-abcde",
     "created_at": "2024-01-01T00:00:00.000Z"
   },
   "message": "消息追加成功",
@@ -518,6 +564,7 @@ X-API-Key: <your_api_key>
 | `data.message_id` | number | 消息在任务中的索引位置（从0开始） |
 | `data.role` | string | 消息角色（USER/ASSISTANT，大写） |
 | `data.content` | string | 消息内容 |
+| `data.session_id` | string\|null | 对话会话ID，客户端与 cursor-agent 交互时的对话会话ID，如果未提供则为 null |
 | `data.created_at` | string | 消息创建时间（ISO 8601 格式） |
 
 **错误响应（401 - API Key 无效）**：
@@ -577,26 +624,34 @@ X-API-Key: <your_api_key>
 **使用示例**：
 
 ```bash
-# 追加用户消息
-curl -X POST "http://localhost:3000/api/v1/tasks/project_001/task/task_001/message" \
+# 追加用户消息（包含 session_id）
+curl -X POST "http://localhost:3000/api/v1/tasks/message" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: sk-xxxxxxxxxxxxxxxx" \
   -d '{
+    "project_id": "550e8400-e29b-41d4-a716-446655440000",
+    "queue_id": ".flow/task-test.json",
+    "task_id": "1",
     "role": "user",
-    "content": "请帮我实现登录功能"
+    "content": "请帮我实现登录功能",
+    "session_id": "session-12345-abcde"
   }'
 
-# 追加 AI 回复
-curl -X POST "http://localhost:3000/api/v1/tasks/project_001/task/task_001/message" \
+# 追加 AI 回复（包含 session_id）
+curl -X POST "http://localhost:3000/api/v1/tasks/message" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: sk-xxxxxxxxxxxxxxxx" \
   -d '{
+    "project_id": "550e8400-e29b-41d4-a716-446655440000",
+    "queue_id": ".flow/task-test.json",
+    "task_id": "1",
     "role": "assistant",
-    "content": "好的，我来帮你实现登录功能..."
+    "content": "好的，我来帮你实现登录功能...",
+    "session_id": "session-12345-abcde"
   }'
 
 # 查询任务详情，验证消息是否正确保存（需要认证）
-curl -X GET "http://localhost:3000/api/v1/projects/project_001/queues/task/tasks/task_001" \
+curl -X GET "http://localhost:3000/api/v1/projects/550e8400-e29b-41d4-a716-446655440000/queues/.flow%2Ftask-test.json/tasks/1" \
   -H "X-API-Key: sk-xxxxxxxxxxxxxxxx"
 ```
 
@@ -606,6 +661,183 @@ curl -X GET "http://localhost:3000/api/v1/projects/project_001/queues/task/tasks
 - 查询任务详情API需要 API Key 认证（与追加消息API相同）
 - 如果任务不存在，追加消息API会返回 404 错误
 - 消息按时间顺序追加，查询时会按 `created_at` 正序返回
+- **重要**：`queue_id` 支持特殊字符（如文件名路径），因为所有参数都从请求体获取，避免了 URL 编码问题
+- **session_id 说明**：`session_id` 是可选字段，用于标识客户端与 cursor-agent 交互时的对话会话。如果提供，服务端会原样存储，不做任何校验。同一会话的所有消息应使用相同的 `session_id`，便于前端按会话分组显示消息
+
+---
+
+### 5.3 追加执行日志接口
+
+追加执行日志接口用于在任务执行过程中，向指定任务追加执行日志。
+
+#### 5.3.1 接口信息
+
+- **接口路径**：`POST /api/v1/tasks/log`
+- **Content-Type**：`application/json`
+- **认证方式**：API Key（请求头：`X-API-Key`）
+- **幂等性**：非幂等（每次调用都会追加新日志）
+
+**重要说明**：所有参数（`project_id`、`queue_id`、`task_id`）都从请求体获取，不使用路径参数。
+
+#### 5.3.2 请求头
+
+```
+Content-Type: application/json
+X-API-Key: <your_api_key>
+```
+
+#### 5.3.3 请求体结构
+
+```json
+{
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "queue_id": ".flow/task-test.json",
+  "task_id": "1",
+  "content": "开始执行任务，正在初始化..."
+}
+```
+
+**字段说明**：
+
+| 字段 | 类型 | 必填 | 说明 | 示例 |
+|------|------|------|------|------|
+| `project_id` | string | 是 | 项目外部唯一标识（1-255字符） | `"550e8400-e29b-41d4-a716-446655440000"` |
+| `queue_id` | string | 是 | 任务队列外部唯一标识（在项目内唯一，1-255字符），支持特殊字符如文件名路径 | `".flow/task-test.json"` |
+| `task_id` | string | 是 | 任务外部唯一标识（在队列内唯一，1-255字符） | `"1"` |
+| `content` | string | 是 | 日志内容（纯文本），长度 1-100000 字符，自动添加时间戳 | `"开始执行任务..."` |
+
+#### 5.3.4 响应格式
+
+**成功响应（200）**：
+```json
+{
+  "success": true,
+  "data": {
+    "log_id": 0,
+    "content": "开始执行任务，正在初始化...",
+    "created_at": "2024-01-01T00:00:00.000Z"
+  },
+  "message": "日志追加成功",
+  "timestamp": "2024-01-01T00:00:00.000Z"
+}
+```
+
+**响应字段说明**：
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| `data.log_id` | number | 日志在任务中的索引位置（从0开始） |
+| `data.content` | string | 日志内容 |
+| `data.created_at` | string | 日志创建时间（ISO 8601 格式，自动时间戳） |
+
+**使用示例**：
+
+```bash
+curl -X POST "http://localhost:3000/api/v1/tasks/log" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: sk-xxxxxxxxxxxxxxxx" \
+  -d '{
+    "project_id": "550e8400-e29b-41d4-a716-446655440000",
+    "queue_id": ".flow/task-test.json",
+    "task_id": "1",
+    "content": "开始执行任务，正在初始化..."
+  }'
+```
+
+**注意事项**：
+- 日志采用追加模式，不会覆盖历史日志
+- 日志追加**不会**更新任务的 `updatedAt` 时间戳（因为日志是辅助信息）
+- 日志追加**不会**更新项目/队列的 `lastTaskAt` 时间戳
+- `queue_id` 支持特殊字符（如文件名路径），因为所有参数都从请求体获取
+
+---
+
+### 5.4 更新任务状态接口
+
+更新任务状态接口用于修改任务的状态（pending、done、error）。
+
+#### 5.4.1 接口信息
+
+- **接口路径**：`PATCH /api/v1/tasks/status`
+- **Content-Type**：`application/json`
+- **认证方式**：API Key（请求头：`X-API-Key`）
+- **幂等性**：幂等（重复调用相同状态值结果一致）
+
+**重要说明**：所有参数（`project_id`、`queue_id`、`task_id`）都从请求体获取，不使用路径参数。
+
+#### 5.4.2 请求头
+
+```
+Content-Type: application/json
+X-API-Key: <your_api_key>
+```
+
+#### 5.4.3 请求体结构
+
+```json
+{
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "queue_id": ".flow/task-test.json",
+  "task_id": "1",
+  "status": "done"
+}
+```
+
+**字段说明**：
+
+| 字段 | 类型 | 必填 | 说明 | 示例 |
+|------|------|------|------|------|
+| `project_id` | string | 是 | 项目外部唯一标识（1-255字符） | `"550e8400-e29b-41d4-a716-446655440000"` |
+| `queue_id` | string | 是 | 任务队列外部唯一标识（在项目内唯一，1-255字符），支持特殊字符如文件名路径 | `".flow/task-test.json"` |
+| `task_id` | string | 是 | 任务外部唯一标识（在队列内唯一，1-255字符） | `"1"` |
+| `status` | string | 是 | 任务状态，必须是 `pending`、`done` 或 `error`（不区分大小写） | `"done"` |
+
+#### 5.4.4 响应格式
+
+**成功响应（200）**：
+```json
+{
+  "success": true,
+  "data": {
+    "task_id": "1",
+    "status": "DONE",
+    "previous_status": "PENDING",
+    "updated_at": "2024-01-01T00:00:00.000Z"
+  },
+  "message": "状态更新成功",
+  "timestamp": "2024-01-01T00:00:00.000Z"
+}
+```
+
+**响应字段说明**：
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| `data.task_id` | string | 任务外部标识 |
+| `data.status` | string | 更新后的任务状态（PENDING/DONE/ERROR，大写） |
+| `data.previous_status` | string | 更新前的任务状态（PENDING/DONE/ERROR，大写） |
+| `data.updated_at` | string | 任务更新时间（ISO 8601 格式） |
+
+**使用示例**：
+
+```bash
+curl -X PATCH "http://localhost:3000/api/v1/tasks/status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: sk-xxxxxxxxxxxxxxxx" \
+  -d '{
+    "project_id": "550e8400-e29b-41d4-a716-446655440000",
+    "queue_id": ".flow/task-test.json",
+    "task_id": "1",
+    "status": "done"
+  }'
+```
+
+**注意事项**：
+- 状态更新是幂等操作，重复调用相同状态值结果一致
+- 每次更新状态后，任务的 `updatedAt` 时间戳会自动更新
+- 项目的 `lastTaskAt` 和队列的 `lastTaskAt` 也会自动更新
+- 支持状态之间的任意转换（pending ↔ done ↔ error）
+- `queue_id` 支持特殊字符（如文件名路径），因为所有参数都从请求体获取
 
 ---
 
@@ -1028,15 +1260,24 @@ TASK_ID="1"
 add_message() {
     local role=$1
     local content=$2
+    local session_id=$3  # 可选参数：对话会话ID
     
-    local url="${API_BASE_URL}/api/v1/tasks/${PROJECT_ID}/${QUEUE_ID}/${TASK_ID}/message"
+    local url="${API_BASE_URL}/api/v1/tasks/message"
     
     local request_body=$(jq -n \
+        --arg project_id "$PROJECT_ID" \
+        --arg queue_id "$QUEUE_ID" \
+        --arg task_id "$TASK_ID" \
         --arg role "$role" \
         --arg content "$content" \
+        --arg session_id "${session_id:-}" \
         '{
+            project_id: $project_id,
+            queue_id: $queue_id,
+            task_id: $task_id,
             role: $role,
-            content: $content
+            content: $content,
+            session_id: (if $session_id == "" then null else $session_id end)
         }')
     
     echo "追加消息: role=$role"
@@ -1097,6 +1338,104 @@ add_message "assistant" "好的，我来帮你实现登录功能..."
 # 3. 查询任务详情，验证消息是否正确保存
 sleep 0.5  # 等待一小段时间，确保数据已保存
 query_task_detail
+
+# 4. 追加执行日志
+add_log() {
+    local content=$1
+    
+    local url="${API_BASE_URL}/api/v1/tasks/log"
+    
+    local request_body=$(jq -n \
+        --arg project_id "$PROJECT_ID" \
+        --arg queue_id "$QUEUE_ID" \
+        --arg task_id "$TASK_ID" \
+        --arg content "$content" \
+        '{
+            project_id: $project_id,
+            queue_id: $queue_id,
+            task_id: $task_id,
+            content: $content
+        }')
+    
+    echo "追加日志: $content"
+    RESPONSE=$(curl -s -w "\n%{http_code}" \
+        -X POST \
+        -H "Content-Type: application/json" \
+        -H "X-API-Key: $API_KEY" \
+        -d "$request_body" \
+        "$url")
+    
+    HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+    BODY=$(echo "$RESPONSE" | sed '$d')
+    
+    if [ "$HTTP_CODE" -eq 200 ]; then
+        echo "✓ 日志追加成功"
+        echo "$BODY" | jq -r '.message'
+        return 0
+    else
+        echo "✗ 日志追加失败 (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq -r '.error.message // "未知错误"'
+        return 1
+    fi
+}
+
+# 5. 更新任务状态
+update_status() {
+    local status=$1
+    
+    local url="${API_BASE_URL}/api/v1/tasks/status"
+    
+    local request_body=$(jq -n \
+        --arg project_id "$PROJECT_ID" \
+        --arg queue_id "$QUEUE_ID" \
+        --arg task_id "$TASK_ID" \
+        --arg status "$status" \
+        '{
+            project_id: $project_id,
+            queue_id: $queue_id,
+            task_id: $task_id,
+            status: $status
+        }')
+    
+    echo "更新状态: $status"
+    RESPONSE=$(curl -s -w "\n%{http_code}" \
+        -X PATCH \
+        -H "Content-Type: application/json" \
+        -H "X-API-Key: $API_KEY" \
+        -d "$request_body" \
+        "$url")
+    
+    HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+    BODY=$(echo "$RESPONSE" | sed '$d')
+    
+    if [ "$HTTP_CODE" -eq 200 ]; then
+        echo "✓ 状态更新成功"
+        echo "$BODY" | jq -r '.message'
+        echo "$BODY" | jq -r '.data | "当前状态: \(.status), 之前状态: \(.previous_status)"'
+        return 0
+    else
+        echo "✗ 状态更新失败 (HTTP $HTTP_CODE)"
+        echo "$BODY" | jq -r '.error.message // "未知错误"'
+        return 1
+    fi
+}
+
+# 使用示例
+# 1. 追加用户消息
+add_message "user" "请帮我实现登录功能"
+
+# 2. 追加 AI 回复
+add_message "assistant" "好的，我来帮你实现登录功能..."
+
+# 3. 追加执行日志
+add_log "开始执行任务，正在初始化..."
+
+# 4. 更新状态为完成
+update_status "done"
+
+# 5. 查询任务详情，验证数据是否正确保存
+sleep 0.5  # 等待一小段时间，确保数据已保存
+query_task_detail
 ```
 
 #### 6.4.2 Python 示例
@@ -1113,17 +1452,24 @@ PROJECT_ID = "550e8400-e29b-41d4-a716-446655440000"
 QUEUE_ID = "task"
 TASK_ID = "1"
 
-def add_message(role, content):
+def add_message(role, content, session_id=None):
     """追加对话消息到指定任务"""
-    url = f"{API_BASE_URL}/api/v1/tasks/{PROJECT_ID}/{QUEUE_ID}/{TASK_ID}/message"
+    url = f"{API_BASE_URL}/api/v1/tasks/message"
     headers = {
         "Content-Type": "application/json",
         "X-API-Key": API_KEY
     }
     payload = {
+        "project_id": PROJECT_ID,
+        "queue_id": QUEUE_ID,
+        "task_id": TASK_ID,
         "role": role,
         "content": content
     }
+    
+    # 如果提供了 session_id，则添加到请求中
+    if session_id:
+        payload["session_id"] = session_id
     
     try:
         response = requests.post(url, json=payload, headers=headers)
@@ -1170,15 +1516,86 @@ def query_task_detail():
         print(f"✗ 网络错误: {e}")
         return None
 
+def add_log(content):
+    """追加执行日志到指定任务"""
+    url = f"{API_BASE_URL}/api/v1/tasks/log"
+    headers = {
+        "Content-Type": "application/json",
+        "X-API-Key": API_KEY
+    }
+    payload = {
+        "project_id": PROJECT_ID,
+        "queue_id": QUEUE_ID,
+        "task_id": TASK_ID,
+        "content": content
+    }
+    
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        result = response.json()
+        print(f"✓ 日志追加成功")
+        print(f"  消息: {result['message']}")
+        print(f"  日志ID: {result['data']['log_id']}")
+        return result
+    except requests.exceptions.HTTPError as e:
+        print(f"✗ 日志追加失败: HTTP {e.response.status_code}")
+        if e.response.headers.get('content-type', '').startswith('application/json'):
+            error = e.response.json()
+            print(f"  错误: {error.get('error', {}).get('message', '')}")
+        return None
+    except requests.exceptions.RequestException as e:
+        print(f"✗ 网络错误: {e}")
+        return None
+
+def update_status(status):
+    """更新任务状态"""
+    url = f"{API_BASE_URL}/api/v1/tasks/status"
+    headers = {
+        "Content-Type": "application/json",
+        "X-API-Key": API_KEY
+    }
+    payload = {
+        "project_id": PROJECT_ID,
+        "queue_id": QUEUE_ID,
+        "task_id": TASK_ID,
+        "status": status
+    }
+    
+    try:
+        response = requests.patch(url, json=payload, headers=headers)
+        response.raise_for_status()
+        result = response.json()
+        print(f"✓ 状态更新成功")
+        print(f"  消息: {result['message']}")
+        print(f"  当前状态: {result['data']['status']}")
+        print(f"  之前状态: {result['data']['previous_status']}")
+        return result
+    except requests.exceptions.HTTPError as e:
+        print(f"✗ 状态更新失败: HTTP {e.response.status_code}")
+        if e.response.headers.get('content-type', '').startswith('application/json'):
+            error = e.response.json()
+            print(f"  错误: {error.get('error', {}).get('message', '')}")
+        return None
+    except requests.exceptions.RequestException as e:
+        print(f"✗ 网络错误: {e}")
+        return None
+
 # 使用示例
 if __name__ == "__main__":
-    # 1. 追加用户消息
-    add_message("user", "请帮我实现登录功能")
+    # 1. 追加用户消息（包含 session_id）
+    add_message("user", "请帮我实现登录功能", "session-12345-abcde")
     
-    # 2. 追加 AI 回复
-    add_message("assistant", "好的，我来帮你实现登录功能...")
+    # 2. 追加 AI 回复（包含 session_id）
+    add_message("assistant", "好的，我来帮你实现登录功能...", "session-12345-abcde")
     
-    # 3. 查询任务详情，验证消息是否正确保存
+    # 3. 追加执行日志
+    add_log("开始执行任务，正在初始化...")
+    
+    # 4. 更新状态为完成
+    update_status("done")
+    
+    # 5. 查询任务详情，验证数据是否正确保存
     time.sleep(0.5)  # 等待一小段时间，确保数据已保存
     query_task_detail()
 ```
@@ -1197,12 +1614,23 @@ const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440000';
 const QUEUE_ID = 'task';
 const TASK_ID = '1';
 
-function addMessage(role, content) {
+function addMessage(role, content, sessionId = null) {
     return new Promise((resolve, reject) => {
-        const url = new URL(
-            `${API_BASE_URL}/api/v1/tasks/${PROJECT_ID}/${QUEUE_ID}/${TASK_ID}/message`
-        );
-        const payload = JSON.stringify({ role, content });
+        const url = new URL(`${API_BASE_URL}/api/v1/tasks/message`);
+        const payloadObj = {
+            project_id: PROJECT_ID,
+            queue_id: QUEUE_ID,
+            task_id: TASK_ID,
+            role: role,
+            content: content
+        };
+        
+        // 如果提供了 sessionId，则添加到请求中
+        if (sessionId) {
+            payloadObj.session_id = sessionId;
+        }
+        
+        const payload = JSON.stringify(payloadObj);
         
         const options = {
             hostname: url.hostname,
@@ -1292,16 +1720,125 @@ function queryTaskDetail() {
     });
 }
 
+function addLog(content) {
+    return new Promise((resolve, reject) => {
+        const url = new URL(`${API_BASE_URL}/api/v1/tasks/log`);
+        const payload = JSON.stringify({
+            project_id: PROJECT_ID,
+            queue_id: QUEUE_ID,
+            task_id: TASK_ID,
+            content: content
+        });
+        
+        const options = {
+            hostname: url.hostname,
+            port: url.port || (url.protocol === 'https:' ? 443 : 80),
+            path: url.pathname,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key': API_KEY,
+                'Content-Length': Buffer.byteLength(payload)
+            }
+        };
+        
+        const client = url.protocol === 'https:' ? https : http;
+        const req = client.request(options, (res) => {
+            let data = '';
+            res.on('data', (chunk) => { data += chunk; });
+            res.on('end', () => {
+                try {
+                    const result = JSON.parse(data);
+                    if (res.statusCode === 200) {
+                        console.log('✓ 日志追加成功');
+                        console.log(`  消息: ${result.message}`);
+                        console.log(`  日志ID: ${result.data.log_id}`);
+                        resolve(result);
+                    } else {
+                        console.error(`✗ 日志追加失败: HTTP ${res.statusCode}`);
+                        console.error(`  错误: ${result.error?.message || '请求失败'}`);
+                        reject(new Error(result.error?.message || '请求失败'));
+                    }
+                } catch (e) {
+                    reject(new Error(`解析响应失败: ${e.message}`));
+                }
+            });
+        });
+        
+        req.on('error', reject);
+        req.write(payload);
+        req.end();
+    });
+}
+
+function updateStatus(status) {
+    return new Promise((resolve, reject) => {
+        const url = new URL(`${API_BASE_URL}/api/v1/tasks/status`);
+        const payload = JSON.stringify({
+            project_id: PROJECT_ID,
+            queue_id: QUEUE_ID,
+            task_id: TASK_ID,
+            status: status
+        });
+        
+        const options = {
+            hostname: url.hostname,
+            port: url.port || (url.protocol === 'https:' ? 443 : 80),
+            path: url.pathname,
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key': API_KEY,
+                'Content-Length': Buffer.byteLength(payload)
+            }
+        };
+        
+        const client = url.protocol === 'https:' ? https : http;
+        const req = client.request(options, (res) => {
+            let data = '';
+            res.on('data', (chunk) => { data += chunk; });
+            res.on('end', () => {
+                try {
+                    const result = JSON.parse(data);
+                    if (res.statusCode === 200) {
+                        console.log('✓ 状态更新成功');
+                        console.log(`  消息: ${result.message}`);
+                        console.log(`  当前状态: ${result.data.status}`);
+                        console.log(`  之前状态: ${result.data.previous_status}`);
+                        resolve(result);
+                    } else {
+                        console.error(`✗ 状态更新失败: HTTP ${res.statusCode}`);
+                        console.error(`  错误: ${result.error?.message || '请求失败'}`);
+                        reject(new Error(result.error?.message || '请求失败'));
+                    }
+                } catch (e) {
+                    reject(new Error(`解析响应失败: ${e.message}`));
+                }
+            });
+        });
+        
+        req.on('error', reject);
+        req.write(payload);
+        req.end();
+    });
+}
+
 // 使用示例
 async function main() {
     try {
-        // 1. 追加用户消息
-        await addMessage('user', '请帮我实现登录功能');
+        // 1. 追加用户消息（包含 session_id）
+        await addMessage('user', '请帮我实现登录功能', 'session-12345-abcde');
         
-        // 2. 追加 AI 回复
-        await addMessage('assistant', '好的，我来帮你实现登录功能...');
+        // 2. 追加 AI 回复（包含 session_id）
+        await addMessage('assistant', '好的，我来帮你实现登录功能...', 'session-12345-abcde');
         
-        // 3. 查询任务详情，验证消息是否正确保存
+        // 3. 追加执行日志
+        await addLog('开始执行任务，正在初始化...');
+        
+        // 4. 更新状态为完成
+        await updateStatus('done');
+        
+        // 5. 查询任务详情，验证数据是否正确保存
         await new Promise(resolve => setTimeout(resolve, 500)); // 等待一小段时间
         await queryTaskDetail();
     } catch (error) {
@@ -1327,14 +1864,19 @@ main().catch(console.error);
 | 400 | `VALIDATION_ERROR` | 请求参数验证失败 | 检查请求数据格式和必填字段 |
 | 500 | `INTERNAL_ERROR` | 服务器内部错误 | 联系管理员或稍后重试 |
 
-#### 7.1.2 追加对话消息接口错误
+#### 7.1.2 增量更新接口错误（消息、日志、状态）
 
 | HTTP 状态码 | 错误码 | 说明 | 解决方案 |
 |------------|--------|------|----------|
 | 401 | `INVALID_API_KEY` | API Key 无效或缺失 | 检查 API Key 是否正确配置 |
-| 400 | `VALIDATION_ERROR` | 请求参数验证失败 | 检查 `role` 是否为 `user` 或 `assistant`，`content` 是否为空或超过100000字符 |
-| 404 | `RESOURCE_NOT_FOUND` | 任务不存在 | 检查 `projectId`、`queueId`、`taskId` 是否正确，任务是否已创建 |
+| 400 | `VALIDATION_ERROR` | 请求参数验证失败 | 检查请求体中的必填字段（`project_id`、`queue_id`、`task_id` 等）是否正确 |
+| 404 | `RESOURCE_NOT_FOUND` | 任务不存在 | 检查 `project_id`、`queue_id`、`task_id` 是否正确，任务是否已创建 |
 | 500 | `INTERNAL_ERROR` | 服务器内部错误 | 联系管理员或稍后重试 |
+
+**具体验证规则**：
+- **追加消息接口**：检查 `role` 是否为 `user` 或 `assistant`，`content` 是否为空或超过100000字符
+- **追加日志接口**：检查 `content` 是否为空或超过100000字符
+- **更新状态接口**：检查 `status` 是否为 `pending`、`done` 或 `error`
 
 ### 7.2 错误处理示例
 
@@ -1481,23 +2023,41 @@ jobs:
 7. **调用提交API**：使用 API Key 认证发送 `POST /api/v1/submit` 请求
 8. **处理响应**：检查响应状态并处理错误
 
-### 10.2 追加对话消息流程
+### 10.2 增量更新接口流程
+
+#### 10.2.1 追加对话消息流程
 
 1. **确保任务已创建**：追加消息前，必须先通过提交接口创建任务
-2. **准备消息数据**：构造包含 `role`（`user` 或 `assistant`）和 `content` 的消息对象
-3. **构造API路径**：使用 `projectId`、`queueId`、`taskId` 构造完整的API路径
-4. **调用消息API**：使用 API Key 认证发送 `POST /api/v1/tasks/:projectId/:queueId/:taskId/message` 请求
-5. **处理响应**：检查响应状态，获取追加后的消息信息（包括 `message_id`）
-6. **验证消息保存**：可以通过查询任务详情API验证消息是否正确保存
+2. **准备消息数据**：构造包含 `project_id`、`queue_id`、`task_id`、`role`（`user` 或 `assistant`）、`content` 和可选的 `session_id` 的请求对象
+3. **调用消息API**：使用 API Key 认证发送 `POST /api/v1/tasks/message` 请求（所有参数在请求体中）
+4. **处理响应**：检查响应状态，获取追加后的消息信息（包括 `message_id` 和 `session_id`）
+5. **验证消息保存**：可以通过查询任务详情API验证消息是否正确保存（响应中包含 `session_id` 字段）
+
+#### 10.2.2 追加执行日志流程
+
+1. **确保任务已创建**：追加日志前，必须先通过提交接口创建任务
+2. **准备日志数据**：构造包含 `project_id`、`queue_id`、`task_id` 和 `content` 的请求对象
+3. **调用日志API**：使用 API Key 认证发送 `POST /api/v1/tasks/log` 请求（所有参数在请求体中）
+4. **处理响应**：检查响应状态，获取追加后的日志信息（包括 `log_id`）
+
+#### 10.2.3 更新任务状态流程
+
+1. **确保任务已创建**：更新状态前，必须先通过提交接口创建任务
+2. **准备状态数据**：构造包含 `project_id`、`queue_id`、`task_id` 和 `status`（`pending`、`done` 或 `error`）的请求对象
+3. **调用状态API**：使用 API Key 认证发送 `PATCH /api/v1/tasks/status` 请求（所有参数在请求体中）
+4. **处理响应**：检查响应状态，获取更新前后的状态信息
 
 **重要说明**：
 - 项目ID使用UUID格式，由客户端生成并持久化保存
 - 客户端信息（`clientInfo`）包含主机名、用户名和项目路径，用于标识项目的来源
 - UUID文件（`.taskecho_project_id`）应该添加到 `.gitignore`，避免提交到版本控制
+- **所有增量更新接口（消息、日志、状态）都使用请求体传递参数，不使用路径参数**
+- **这样可以避免 `queue_id` 包含特殊字符（如文件名路径 `.flow/task-test.json`）时的 URL 编码问题**
 - 追加对话消息接口支持多轮对话，可以连续追加多条消息
-- 追加消息前需要确保任务已通过提交接口创建
-- 消息会立即保存到数据库，可以通过查询任务详情API（`GET /api/v1/projects/:projectId/queues/:queueId/tasks/:taskId`）验证消息是否正确保存
-- 查询任务详情API需要认证（API Key），与追加消息API使用相同的认证方式
+- 追加消息/日志/状态前需要确保任务已通过提交接口创建
+- 消息和日志会立即保存到数据库，可以通过查询任务详情API验证是否正确保存
+- 查询任务详情API需要认证（API Key），与增量更新API使用相同的认证方式
+- **session_id 字段**：用于标识客户端与 cursor-agent 交互时的对话会话，是可选字段。如果提供，服务端会原样存储，不做任何校验。同一会话的所有消息应使用相同的 `session_id`，便于前端按会话分组显示消息
 
 通过遵循本文档的指引，您可以轻松实现 TaskEcho 客户端，将本地任务数据推送到服务器，并在任务执行过程中追加对话消息。
 

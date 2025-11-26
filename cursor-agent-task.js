@@ -7,6 +7,7 @@ const path = require("path");
 const os = require("os");
 const { spawn, spawnSync } = require("child_process");
 const readline = require("readline");
+const taskecho = require("./taskecho-client");
 
 // 注意: 已移除浏览器关闭相关功能
 
@@ -667,6 +668,10 @@ function printUsage() {
                         可通过环境变量 CURSOR_TASKS_JUDGE_MODEL 设置
   --retry <num>       最大重试次数（默认: 3）
   --timeout <minutes> 每次执行的超时时间，分钟（默认: 60）
+  --echo-url <url>    TaskEcho API URL（可选，用于推送消息）
+  --echo-api-key <key> TaskEcho API Key（可选，用于推送消息）
+  --echo-task-id <id> TaskEcho 任务 ID（可选，用于推送消息）
+  --echo-task-file <file> TaskEcho 任务文件路径（可选，用于推送消息）
   -h, --help          显示帮助
 
 环境变量:
@@ -708,6 +713,10 @@ function parseArgs(argv) {
     judgeModel: null, // 语义判定模型（必需）
     retry: 3, // 最大重试次数
     timeoutMinutes: 60, // 每次执行的超时时间（分钟），默认1小时
+    echoUrl: null, // TaskEcho API URL（可选）
+    echoApiKey: null, // TaskEcho API Key（可选）
+    echoTaskId: null, // TaskEcho 任务 ID（可选）
+    echoTaskFile: null, // TaskEcho 任务文件路径（可选）
     help: false,
     positional: [],
   };
@@ -774,6 +783,38 @@ function parseArgs(argv) {
       if (isNaN(state.timeoutMinutes) || state.timeoutMinutes < 1) {
         die(2, "错误: --timeout 必须是一个正整数");
       }
+      i += 2;
+      continue;
+    }
+    if (a === "--echo-url") {
+      if (i + 1 >= argv.length) {
+        die(2, "错误: --echo-url 需要一个参数");
+      }
+      state.echoUrl = argv[i + 1];
+      i += 2;
+      continue;
+    }
+    if (a === "--echo-api-key") {
+      if (i + 1 >= argv.length) {
+        die(2, "错误: --echo-api-key 需要一个参数");
+      }
+      state.echoApiKey = argv[i + 1];
+      i += 2;
+      continue;
+    }
+    if (a === "--echo-task-id") {
+      if (i + 1 >= argv.length) {
+        die(2, "错误: --echo-task-id 需要一个参数");
+      }
+      state.echoTaskId = argv[i + 1];
+      i += 2;
+      continue;
+    }
+    if (a === "--echo-task-file") {
+      if (i + 1 >= argv.length) {
+        die(2, "错误: --echo-task-file 需要一个参数");
+      }
+      state.echoTaskFile = argv[i + 1];
       i += 2;
       continue;
     }
@@ -2188,6 +2229,16 @@ async function main() {
   logSubStep(`系统提示词: ${args.systemPrompt ? "已提供" : "未提供"}`);
   logSubStep(`直接提示词: ${args.prompt ? "已提供" : "未提供"}`);
   logSubStep(`透传参数: ${args.positional.length} 个`);
+  if (args.echoUrl && args.echoApiKey && args.echoTaskId && args.echoTaskFile) {
+    logSubStep(`TaskEcho 推送: 已启用`);
+  }
+
+  // 如果提供了 TaskEcho 参数，设置环境变量
+  if (args.echoUrl && args.echoApiKey) {
+    process.env.TASKECHO_API_URL = args.echoUrl;
+    process.env.TASKECHO_API_KEY = args.echoApiKey;
+    process.env.TASKECHO_ENABLED = "true";
+  }
 
   // 验证必需参数
   if (!args.prompt && args.promptFiles.length === 0) {
@@ -2218,7 +2269,15 @@ async function main() {
     args.judgeModel,
     args.retry,
     args.timeoutMinutes,
-    args.positional
+    args.positional,
+    args.echoUrl && args.echoApiKey && args.echoTaskId && args.echoTaskFile 
+      ? { 
+          url: args.echoUrl, 
+          apiKey: args.echoApiKey,
+          taskId: args.echoTaskId,
+          taskFile: args.echoTaskFile
+        } 
+      : null
   );
 
   // 输出执行结果汇总
@@ -2450,6 +2509,44 @@ function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
 }
 
 /**
+ * 推送日志到 TaskEcho（带错误处理）
+ * @param {Object|null} echoConfig - TaskEcho 配置（可选，包含 taskId, taskFile）
+ * @param {string} content - 日志内容
+ * @param {boolean} silent - 是否静默处理错误（默认: true）
+ */
+async function pushLogToTaskEcho(echoConfig, content, silent = true) {
+  if (!echoConfig || !taskecho.isEnabled()) {
+    return;
+  }
+  
+  try {
+    const { taskId, taskFile } = echoConfig;
+    if (!taskId || !taskFile) {
+      return;
+    }
+    
+    const projectInfo = await taskecho.getProjectInfo();
+    const queueInfo = taskecho.getQueueInfo(taskFile, { prompts: [] });
+    
+    await taskecho.addLog(
+      projectInfo.project_id,
+      queueInfo.queue_id,
+      taskId,
+      content
+    );
+    
+    if (!silent) {
+      logDetail(`日志已推送到 TaskEcho: ${content.substring(0, 50)}...`);
+    }
+  } catch (err) {
+    if (!silent) {
+      logDetail(`TaskEcho 日志推送失败: ${err.message}`);
+    }
+    // 静默处理错误，不影响主流程
+  }
+}
+
+/**
  * 执行任务循环（首次执行 -> 判定 -> resume -> ...）
  * @param {string} prompt - 初始提示词
  * @param {string} model - 模型名称
@@ -2457,9 +2554,10 @@ function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
  * @param {number} retry - 最大重试次数
  * @param {number} timeoutMinutes - 每次执行的超时时间（分钟）
  * @param {string[]} positionalArgs - 透传参数
+ * @param {Object|null} echoConfig - TaskEcho 配置（可选，包含 url, apiKey, taskId, taskFile）
  * @returns {Promise<Object>} 执行结果
  */
-async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMinutes, positionalArgs) {
+async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMinutes, positionalArgs, echoConfig = null) {
   const executions = [];
   let attempts = 0;
   let needsContinue = true;
@@ -2470,9 +2568,22 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
 
   logTitle("任务执行循环", `最大重试: ${retry} 次 | 超时: ${timeoutMinutes} 分钟`);
 
+  // 推送任务开始日志
+  await pushLogToTaskEcho(
+    echoConfig,
+    `📋 任务开始执行 | 模型: ${model} | 最大重试: ${retry} 次 | 超时: ${timeoutMinutes} 分钟`
+  );
+
   while (needsContinue && attempts < retry) {
     attempts++;
     logStep(attempts, `执行 ${attempts}/${retry}`);
+    
+    // 推送执行开始日志
+    const executionType = attempts === 1 ? "首次执行" : "Resume";
+    await pushLogToTaskEcho(
+      echoConfig,
+      `▶️ 第 ${attempts} 次执行开始 | 类型: ${executionType}${attempts > 1 && sessionId ? ` | session_id: ${sessionId}` : ""}`
+    );
 
     try {
       let result;
@@ -2515,12 +2626,29 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
 
       logSubStep(`执行时长: ${(result.durationMs / 1000).toFixed(1)} 秒`);
 
+      // 推送执行完成日志
+      const durationText = `${(result.durationMs / 1000).toFixed(1)} 秒`;
+      await pushLogToTaskEcho(
+        echoConfig,
+        `✅ 执行完成 | 时长: ${durationText} | 退出码: ${result.exitCode || 0}`
+      );
+
       // 检查运行时错误
       if (result.exitCode !== 0 || result.stderr) {
         logError(`运行时错误: 退出码 ${result.exitCode}`);
         const fullError = `运行时错误: 退出码 ${result.exitCode}\n${result.stderr || "无错误输出"}\n\n标准输出:\n${result.stdout}`;
         errorMessage = fullError.substring(0, 200);
         finalStatus = "error";
+        
+        // 推送运行时错误日志
+        const errorSummary = result.stderr 
+          ? result.stderr.substring(0, 200) + (result.stderr.length > 200 ? "..." : "")
+          : "无错误输出";
+        await pushLogToTaskEcho(
+          echoConfig,
+          `❌ 运行时错误 | 退出码: ${result.exitCode} | 错误: ${errorSummary}`
+        );
+        
         executions.push({
           index: attempts,
           durationMs: result.durationMs,
@@ -2534,6 +2662,17 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
       logSubStep("进行语义判定");
       const executionSummary = result.stdout.substring(0, 5000);
       const semanticsResult = await interpretSemanticsViaLLM(judgeModel, executionSummary);
+      
+      // 推送语义判定结果日志
+      const resultText = semanticsResult.result === "done" ? "已完成" :
+                         semanticsResult.result === "auto" ? "建议继续" : "需要继续";
+      const reasonText = semanticsResult.reasons && semanticsResult.reasons.length > 0
+        ? semanticsResult.reasons[0].substring(0, 100) + (semanticsResult.reasons[0].length > 100 ? "..." : "")
+        : "无原因说明";
+      await pushLogToTaskEcho(
+        echoConfig,
+        `🔍 语义判定 | 结果: ${resultText} | 原因: ${reasonText}`
+      );
       
       // 保存语义判定结果，用于下次 resume 时决定提示词
       lastSemanticsResult = semanticsResult;
@@ -2552,21 +2691,89 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
         ],
       });
 
+      // 推送 AI 回复到 TaskEcho（如果启用）
+      if (echoConfig && taskecho.isEnabled()) {
+        try {
+          const taskId = echoConfig.taskId;
+          const taskFile = echoConfig.taskFile;
+          
+          if (taskId && taskFile) {
+            const projectInfo = await taskecho.getProjectInfo();
+            const queueInfo = taskecho.getQueueInfo(taskFile, { prompts: [] });
+            
+            // 提取 AI 回复内容（result.stdout 包含完整的 AI 回复）
+            let aiMessage = result.stdout.trim();
+            
+            // 如果 stdout 包含 JSON，尝试提取非 JSON 部分
+            if (aiMessage) {
+              const jsonMatch = aiMessage.match(/\{[\s\S]*\}/);
+              if (jsonMatch) {
+                const jsonIndex = aiMessage.indexOf(jsonMatch[0]);
+                if (jsonIndex > 0) {
+                  // JSON 之前的内容
+                  aiMessage = aiMessage.substring(0, jsonIndex).trim();
+                } else if (jsonIndex === 0) {
+                  // JSON 在开头，尝试提取 JSON 之后的内容
+                  const afterJson = aiMessage.substring(jsonMatch[0].length).trim();
+                  if (afterJson) {
+                    aiMessage = afterJson;
+                  } else {
+                    // 如果 JSON 之后没有内容，跳过推送
+                    aiMessage = "";
+                  }
+                }
+              }
+            }
+            
+            // 如果提取到了消息内容，推送消息
+            if (aiMessage && aiMessage.length > 0) {
+              await taskecho.addMessage(
+                projectInfo.project_id,
+                queueInfo.queue_id,
+                taskId,
+                "assistant",
+                aiMessage,
+                sessionId || null  // 附带 session_id（如果可用）
+              );
+              logDetail(`AI 回复已推送到 TaskEcho (${aiMessage.length} 字符)${sessionId ? `, session_id: ${sessionId}` : ""}`);
+            }
+          }
+        } catch (err) {
+          // 静默处理错误，不影响主流程
+          logDetail(`TaskEcho 推送失败: ${err.message}`);
+        }
+      }
+
       // 根据结果处理
       if (semanticsResult.result === "done") {
         logSuccess("任务已完成");
         finalStatus = "done";
         needsContinue = false;
+        
+        // 推送任务完成日志
+        await pushLogToTaskEcho(
+          echoConfig,
+          `🎉 任务已完成 | 总执行次数: ${attempts} 次`
+        );
+        
         break;
       } else {
         // resume 或 auto：标记需要继续
         needsContinue = true;
+        const continueReason = semanticsResult.result === "auto" ? "建议继续" : "需要继续";
+        
         if (semanticsResult.result === "auto") {
           logWarning("建议继续执行");
         } else {
           logWarning("需要继续执行");
         }
+        
+        // 推送需要继续日志
         if (attempts < retry) {
+          await pushLogToTaskEcho(
+            echoConfig,
+            `⏭️ ${continueReason} | 准备第 ${attempts + 1} 次执行`
+          );
           logFlow(`准备第 ${attempts + 1} 次执行...`);
         }
       }
@@ -2574,6 +2781,13 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
       logError(`执行出错: ${err.message}`);
       errorMessage = err.message;
       finalStatus = "error";
+      
+      // 推送异常错误日志
+      await pushLogToTaskEcho(
+        echoConfig,
+        `💥 执行异常 | 错误: ${err.message.substring(0, 200)}${err.message.length > 200 ? "..." : ""}`
+      );
+      
       executions.push({
         index: attempts,
         durationMs: 0,
@@ -2588,7 +2802,23 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
   if (needsContinue && attempts >= retry) {
     logWarning(`达到重试上限(${retry})，标记为部分完成`);
     finalStatus = "partial";
+    
+    // 推送重试上限日志
+    await pushLogToTaskEcho(
+      echoConfig,
+      `⚠️ 达到重试上限(${retry}) | 标记为部分完成`
+    );
   }
+
+  // 推送任务最终状态汇总
+  const totalDuration = executions.reduce((sum, e) => sum + e.durationMs, 0);
+  const statusText = finalStatus === "done" ? "✅ 成功完成" :
+                     finalStatus === "partial" ? "⚠️ 部分完成" :
+                     finalStatus === "error" ? "❌ 执行失败" : "❓ 未知状态";
+  await pushLogToTaskEcho(
+    echoConfig,
+    `${statusText} | 总执行次数: ${attempts} 次 | 总耗时: ${(totalDuration / 1000).toFixed(1)} 秒${errorMessage ? ` | 错误: ${errorMessage.substring(0, 100)}${errorMessage.length > 100 ? "..." : ""}` : ""}`
+  );
 
   return {
     success: finalStatus === "done",

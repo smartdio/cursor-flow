@@ -5,6 +5,7 @@ const fs = require("fs");
 const fsp = fs.promises;
 const path = require("path");
 const { spawn } = require("child_process");
+const taskecho = require("./taskecho-client");
 
 // ============================================================================
 // 日志输出
@@ -345,9 +346,12 @@ function validate_config(config) {
     throw new Error("task.json 中缺少 tasks 数组");
   }
 
-  // 检查任务名称唯一性
+  // 检查任务 ID 唯一性和必填性
+  const ids = new Set();
   const names = new Set();
+  
   for (const task of config.tasks) {
+    // 验证 name 字段（必填）
     if (!task.name) {
       throw new Error("任务缺少 name 字段");
     }
@@ -355,6 +359,23 @@ function validate_config(config) {
       throw new Error(`任务名称重复: ${task.name}`);
     }
     names.add(task.name);
+
+    // 验证 id 字段（必填）
+    if (task.id === undefined || task.id === null) {
+      throw new Error(`任务 "${task.name}" 缺少必填字段 id`);
+    }
+    
+    const taskId = String(task.id).trim();
+    if (taskId.length === 0) {
+      throw new Error(`任务 "${task.name}" 的 id 字段不能为空字符串`);
+    }
+    if (taskId.length > 255) {
+      throw new Error(`任务 "${task.name}" 的 id 字段长度不能超过 255 字符`);
+    }
+    if (ids.has(taskId)) {
+      throw new Error(`任务 ID 重复: ${taskId} (任务: ${task.name})`);
+    }
+    ids.add(taskId);
 
     // prompt 和 spec_file 至少要有其中一个
     const hasPrompt = task.prompt && typeof task.prompt === "string" && task.prompt.trim().length > 0;
@@ -448,9 +469,14 @@ function find_agent_script() {
  * @param {string[]} prompts - 提示词文件路径数组
  * @param {string|string[]} specFiles - spec 文件路径（字符串或字符串数组）
  * @param {string} [taskPrompt] - 任务的 prompt 属性（可选）
+ * @param {string} judgeModel - 语义判定模型
+ * @param {number} retry - 重试次数
+ * @param {number} timeoutMinutes - 超时时间（分钟）
+ * @param {Object} [task] - 任务对象（可选，用于 TaskEcho 推送）
+ * @param {string} [taskFile] - 任务文件路径（可选，用于 TaskEcho 推送）
  * @returns {string[]} 参数数组
  */
-function build_agent_args(model, prompts, specFiles, taskPrompt, judgeModel, retry, timeoutMinutes) {
+function build_agent_args(model, prompts, specFiles, taskPrompt, judgeModel, retry, timeoutMinutes, task = null, taskFile = null) {
   const args = ["-m", model];
 
   // 添加语义判定模型（必需）
@@ -496,6 +522,19 @@ function build_agent_args(model, prompts, specFiles, taskPrompt, judgeModel, ret
   if (taskPrompt && taskPrompt.trim()) {
     args.push("-p", taskPrompt.trim());
     logSuccess(`添加任务 prompt: ${colorize(taskPrompt.substring(0, 50) + (taskPrompt.length > 50 ? "..." : ""), "cyan")}`);
+  }
+
+  // 如果 TaskEcho 启用且任务有 ID，添加 TaskEcho 参数
+  if (taskecho.isEnabled() && task && task.id && taskFile) {
+    const echoUrl = taskecho.getApiUrl();
+    const echoApiKey = taskecho.getApiKey();
+    if (echoUrl && echoApiKey) {
+      args.push("--echo-url", echoUrl);
+      args.push("--echo-api-key", echoApiKey);
+      args.push("--echo-task-id", task.id);
+      args.push("--echo-task-file", taskFile);
+      logInfo(`添加 TaskEcho 参数: ${colorize("已启用", "cyan")}`);
+    }
   }
 
   logInfo(`构建的 agent 参数: ${colorize(args.join(" "), "dim")}`);
@@ -854,6 +893,14 @@ async function init_flow_directory(cwd = process.cwd()) {
 # 语义判定模型（必需）
 # 用于判定任务是否完成，例如: gpt-4, gpt-4-turbo-preview, claude-3-opus-20240229
 CURSOR_TASKS_JUDGE_MODEL=
+
+# TaskEcho 服务配置（可选）
+# TaskEcho API 服务地址
+TASKECHO_API_URL=http://localhost:3000
+# TaskEcho API Key
+TASKECHO_API_KEY=
+# 是否启用 TaskEcho 集成（true/false）
+TASKECHO_ENABLED=false
 `;
     await fsp.writeFile(envExamplePath, envExampleContent, "utf8");
     logSuccess(`文件已创建: ${colorize(".flow/.env.example", "cyan")}`);
@@ -939,6 +986,27 @@ async function reset_tasks(globalConfig) {
 
   // 保存任务文件
   await save_task_file(globalConfig.taskFile, taskFile);
+  logSuccess(`任务文件已保存`);
+
+  // 推送更新后的全量队列到 TaskEcho（如果启用）
+  if (taskecho.isEnabled()) {
+    try {
+      logInfo(`TaskEcho 已启用，重新读取任务文件并推送全量队列...`);
+      // 重新读取任务文件，确保推送的是文件中的最新状态
+      const updatedTaskFile = await load_task_file(globalConfig.taskFile);
+      const projectInfo = await taskecho.getProjectInfo();
+      const queueInfo = taskecho.getQueueInfo(globalConfig.taskFile, updatedTaskFile);
+      await taskecho.submitQueue(projectInfo, queueInfo, updatedTaskFile);
+      logSuccess(`全量队列已推送到 TaskEcho（共 ${colorize(updatedTaskFile.tasks.length, "bright")} 个任务）`);
+    } catch (err) {
+      logWarning(`TaskEcho 推送失败: ${err.message}`);
+      // 不中断执行，重置操作已完成
+    }
+  } else {
+    const enabledValue = process.env.TASKECHO_ENABLED || "未设置";
+    const apiKeySet = process.env.TASKECHO_API_KEY ? "已设置" : "未设置";
+    logInfo(`TaskEcho 未启用（TASKECHO_ENABLED=${enabledValue}, TASKECHO_API_KEY=${apiKeySet}），跳过队列推送`);
+  }
 
   console.error("");
   printSeparator();
@@ -982,6 +1050,27 @@ async function reset_error_tasks(globalConfig) {
 
   // 保存任务文件
   await save_task_file(globalConfig.taskFile, taskFile);
+  logSuccess(`任务文件已保存`);
+
+  // 推送更新后的全量队列到 TaskEcho（如果启用）
+  if (taskecho.isEnabled()) {
+    try {
+      logInfo(`TaskEcho 已启用，重新读取任务文件并推送全量队列...`);
+      // 重新读取任务文件，确保推送的是文件中的最新状态
+      const updatedTaskFile = await load_task_file(globalConfig.taskFile);
+      const projectInfo = await taskecho.getProjectInfo();
+      const queueInfo = taskecho.getQueueInfo(globalConfig.taskFile, updatedTaskFile);
+      await taskecho.submitQueue(projectInfo, queueInfo, updatedTaskFile);
+      logSuccess(`全量队列已推送到 TaskEcho（共 ${colorize(updatedTaskFile.tasks.length, "bright")} 个任务）`);
+    } catch (err) {
+      logWarning(`TaskEcho 推送失败: ${err.message}`);
+      // 不中断执行，重置操作已完成
+    }
+  } else {
+    const enabledValue = process.env.TASKECHO_ENABLED || "未设置";
+    const apiKeySet = process.env.TASKECHO_API_KEY ? "已设置" : "未设置";
+    logInfo(`TaskEcho 未启用（TASKECHO_ENABLED=${enabledValue}, TASKECHO_API_KEY=${apiKeySet}），跳过队列推送`);
+  }
 
   console.error("");
   printSeparator();
@@ -1004,6 +1093,25 @@ async function execute_task(task, globalConfig, prompts) {
   console.error("");
   printSeparator("─");
   logTaskStatus(task.name, "pending", "开始执行任务");
+  
+  // 推送用户消息到 TaskEcho（如果启用）
+  if (taskecho.isEnabled() && task.id) {
+    try {
+      const projectInfo = await taskecho.getProjectInfo();
+      const queueInfo = taskecho.getQueueInfo(globalConfig.taskFile, { prompts: prompts || [] });
+      const userMessage = task.prompt || "开始执行任务";
+      await taskecho.addMessage(
+        projectInfo.project_id,
+        queueInfo.queue_id,
+        task.id,
+        "user",
+        userMessage
+      );
+    } catch (err) {
+      logWarning(`TaskEcho 消息推送失败: ${err.message}`);
+    }
+  }
+  
   if (prompts && prompts.length > 0) {
     logInfo(`接收到的 prompts: ${colorize(prompts.length, "cyan")} 个文件`);
   }
@@ -1041,7 +1149,9 @@ async function execute_task(task, globalConfig, prompts) {
       task.prompt,
       globalConfig.judgeModel,
       globalConfig.retry,
-      globalConfig.timeoutMinutes
+      globalConfig.timeoutMinutes,
+      task, // 传递任务对象用于 TaskEcho
+      globalConfig.taskFile // 传递任务文件路径用于 TaskEcho
     );
 
     // 调用 cursor-agent-task.js（只调用一次，它会内部处理循环）
@@ -1109,6 +1219,67 @@ async function execute_task(task, globalConfig, prompts) {
       // 调试信息：输出关键字段
       logInfo(`解析结果: success=${executionResult.success} (type: ${typeof executionResult.success}), finalStatus=${executionResult.finalStatus}`);
       
+      // 推送 AI 回复消息到 TaskEcho（如果启用）
+      if (taskecho.isEnabled() && task.id) {
+        try {
+          const projectInfo = await taskecho.getProjectInfo();
+          const queueInfo = taskecho.getQueueInfo(globalConfig.taskFile, { prompts: prompts || [] });
+          
+          // 提取 AI 回复内容
+          let aiMessage = "";
+          
+          // 方案1: 从 executionResult 中提取消息内容
+          if (executionResult.message || executionResult.content) {
+            aiMessage = executionResult.message || executionResult.content;
+          } else if (executionResult.executions && executionResult.executions.length > 0) {
+            // 从最后一次执行中提取输出
+            const lastExecution = executionResult.executions[executionResult.executions.length - 1];
+            if (lastExecution.output || lastExecution.stdout) {
+              aiMessage = lastExecution.output || lastExecution.stdout;
+            }
+          }
+          
+          // 方案2: 如果无法从 JSON 中提取，使用 stdout（去除 JSON 部分）
+          if (!aiMessage && result.stdout) {
+            // 尝试提取非 JSON 部分的输出
+            const jsonMatch = result.stdout.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              // 提取 JSON 之前的内容作为 AI 回复
+              const jsonIndex = result.stdout.indexOf(jsonMatch[0]);
+              if (jsonIndex > 0) {
+                aiMessage = result.stdout.substring(0, jsonIndex).trim();
+              } else {
+                // 如果 JSON 在开头，尝试提取 JSON 之后的内容
+                const afterJson = result.stdout.substring(jsonIndex + jsonMatch[0].length).trim();
+                if (afterJson) {
+                  aiMessage = afterJson;
+                }
+              }
+            } else {
+              // 没有 JSON，直接使用 stdout
+              aiMessage = result.stdout.trim();
+            }
+          }
+          
+          // 如果提取到了消息内容，推送消息
+          if (aiMessage && aiMessage.length > 0) {
+            await taskecho.addMessage(
+              projectInfo.project_id,
+              queueInfo.queue_id,
+              task.id,
+              "assistant",
+              aiMessage
+            );
+            logInfo("AI 回复已推送到 TaskEcho");
+          } else {
+            logWarning("无法从执行结果中提取 AI 回复内容，跳过推送");
+          }
+        } catch (err) {
+          logWarning(`TaskEcho AI 消息推送失败: ${err.message}`);
+          // 不中断执行，继续处理任务结果
+        }
+      }
+      
       // 简化判断逻辑：优先检查 success 字段，其次检查 finalStatus
       // 注意：success 可能是布尔值 true，finalStatus 可能是字符串 "done"
       const isSuccess = executionResult.success === true || executionResult.success === "true" || String(executionResult.success).toLowerCase() === "true";
@@ -1116,6 +1287,7 @@ async function execute_task(task, globalConfig, prompts) {
       
       if (isSuccess || isDone) {
         logTaskStatus(task.name, "success", "任务已完成");
+        
         finalStatus = "成功";
         errorMessage = null;
         detailedError = null;
@@ -1126,6 +1298,7 @@ async function execute_task(task, globalConfig, prompts) {
       } else {
         // success !== true 且 finalStatus 不是 done/partial，视为失败
         logTaskStatus(task.name, "error", `任务执行失败 (success=${executionResult.success}, finalStatus=${executionResult.finalStatus})`);
+        
         finalStatus = "失败";
         errorMessage = executionResult.errorMessage || "任务执行失败";
         detailedError = executionResult.errorMessage || "任务执行失败";
@@ -1149,8 +1322,9 @@ async function execute_task(task, globalConfig, prompts) {
         finalStatus = "失败";
       }
     }
-  } catch (err) {
+    } catch (err) {
     logTaskStatus(task.name, "error", `任务执行失败: ${err.message}`);
+    
     const fullError = err.stack || err.message;
     detailedError = fullError;
     errorMessage = extract_short_error_message(fullError);
@@ -1222,6 +1396,22 @@ async function run_all_tasks(globalConfig) {
   validate_config(taskFile);
   logSuccess(`配置验证通过，共 ${colorize(taskFile.tasks.length, "bright")} 个任务`);
 
+  // 推送队列到 TaskEcho（如果启用）
+  if (taskecho.isEnabled()) {
+    try {
+      logInfo(`TaskEcho 已启用，准备推送队列...`);
+      const projectInfo = await taskecho.getProjectInfo();
+      const queueInfo = taskecho.getQueueInfo(globalConfig.taskFile, taskFile);
+      await taskecho.submitQueue(projectInfo, queueInfo, taskFile);
+      logSuccess("队列已推送到 TaskEcho");
+    } catch (err) {
+      logWarning(`TaskEcho 推送失败: ${err.message}`);
+      // 不中断执行，继续本地任务
+    }
+  } else {
+    logInfo(`TaskEcho 未启用（TASKECHO_ENABLED=${process.env.TASKECHO_ENABLED || "未设置"}, TASKECHO_API_KEY=${process.env.TASKECHO_API_KEY ? "已设置" : "未设置"}）`);
+  }
+
   // 确保报告目录存在
   await ensure_directories(globalConfig.reportDir);
   logInfo(`报告目录: ${colorize(globalConfig.reportDir, "cyan")}`);
@@ -1273,6 +1463,7 @@ async function run_all_tasks(globalConfig) {
       const result = await execute_task(task, globalConfig, validPrompts);
 
       // 更新任务状态(包括报告路径)
+      const oldStatus = task.status;
       update_task_status(
         taskFile.tasks,
         task.name,
@@ -1280,6 +1471,40 @@ async function run_all_tasks(globalConfig) {
         result.error_message,
         result.reportPath
       );
+
+      // 推送状态更新到 TaskEcho（如果启用）
+      if (taskecho.isEnabled() && task.id) {
+        if (oldStatus !== result.status) {
+          try {
+            logInfo(`推送任务状态更新到 TaskEcho: ${task.name} (${oldStatus || "unknown"} → ${result.status})`);
+            const projectInfo = await taskecho.getProjectInfo();
+            const queueInfo = taskecho.getQueueInfo(globalConfig.taskFile, taskFile);
+            
+            // 使用 updateStatus API 更新任务状态
+            await taskecho.updateStatus(
+              projectInfo.project_id,
+              queueInfo.queue_id,
+              task.id,
+              result.status
+            );
+            
+            logSuccess(`任务状态已推送到 TaskEcho: ${task.name}`);
+          } catch (err) {
+            logWarning(`TaskEcho 状态推送失败: ${err.message}`);
+            if (err.stack) {
+              logWarning(`错误堆栈: ${err.stack}`);
+            }
+          }
+        } else {
+          logInfo(`任务状态未变化，跳过推送: ${task.name} (${oldStatus} → ${result.status})`);
+        }
+      } else {
+        if (!taskecho.isEnabled()) {
+          logInfo(`TaskEcho 未启用，跳过状态推送: ${task.name}`);
+        } else if (!task.id) {
+          logWarning(`任务缺少 id 字段，跳过状态推送: ${task.name}`);
+        }
+      }
 
       // 保存任务文件
       await save_task_file(globalConfig.taskFile, taskFile);
@@ -1292,6 +1517,23 @@ async function run_all_tasks(globalConfig) {
     } catch (err) {
       logTaskStatus(task.name, "error", `执行异常: ${err.message}`);
       update_task_status(taskFile.tasks, task.name, "error", err.message);
+      
+      // 推送错误状态到 TaskEcho（如果启用）
+      if (taskecho.isEnabled() && task.id) {
+        try {
+          const projectInfo = await taskecho.getProjectInfo();
+          const queueInfo = taskecho.getQueueInfo(globalConfig.taskFile, taskFile);
+          await taskecho.updateStatus(
+            projectInfo.project_id,
+            queueInfo.queue_id,
+            task.id,
+            "error"
+          );
+        } catch (taskechoErr) {
+          logWarning(`TaskEcho 错误状态推送失败: ${taskechoErr.message}`);
+        }
+      }
+      
       await save_task_file(globalConfig.taskFile, taskFile);
       errored++;
     }
@@ -1320,15 +1562,13 @@ async function run_all_tasks(globalConfig) {
 
 async function main() {
   try {
-    // 先解析参数，检查是否是 init、help、reset 或 reset-error 命令（这些命令不需要加载环境变量）
+    // 先解析参数，检查是否是 init 或 help 命令（这些命令不需要加载环境变量）
     const argv = process.argv.slice(2);
     const isInit = argv.includes("init");
     const isHelp = argv.includes("-h") || argv.includes("--help");
-    const isReset = argv.includes("--reset");
-    const isResetError = argv.includes("--reset-error");
     
-    // 如果不是 init、help、reset 或 reset-error 命令，先加载环境变量
-    if (!isInit && !isHelp && !isReset && !isResetError) {
+    // 如果不是 init 或 help 命令，先加载环境变量（reset 和 reset-error 需要环境变量来启用 TaskEcho）
+    if (!isInit && !isHelp) {
       await load_cursor_env();
     }
 
