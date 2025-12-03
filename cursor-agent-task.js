@@ -1160,9 +1160,10 @@ function findCursorAgentCommand() {
  * @param {string} sessionId - session_id（必需）
  * @param {string} prompt - 提示词（简短，例如"请继续"）
  * @param {number} timeoutMinutes - 超时时间(分钟)
+ * @param {Object|null} echoConfig - TaskEcho 配置（可选，包含 taskId, taskFile）
  * @returns {Promise<Object>} AgentRunResult { exitCode, stdout, stderr, durationMs, sessionId }
  */
-function runCursorAgentResume(model, sessionId, prompt, timeoutMinutes) {
+function runCursorAgentResume(model, sessionId, prompt, timeoutMinutes, echoConfig = null) {
   return new Promise((resolve, reject) => {
     const startTime = Date.now();
     const command = findCursorAgentCommand();
@@ -1209,6 +1210,13 @@ function runCursorAgentResume(model, sessionId, prompt, timeoutMinutes) {
 
     // 检查是否支持流式输出
     if (streamPartial) {
+      // 创建消息推送回调
+      const onMessage = echoConfig && taskecho.isEnabled()
+        ? async (message, msgSessionId) => {
+            await pushMessageToTaskEcho(echoConfig, message, msgSessionId || extractedSessionId, true);
+          }
+        : null;
+      
       // 流式模式：使用 pipeThroughAssistantFilter 提取文本并显示
       // 同时收集提取后的文本和 session_id 用于语义判定
       pipeThroughAssistantFilter(child.stdout, () => {
@@ -1219,7 +1227,7 @@ function runCursorAgentResume(model, sessionId, prompt, timeoutMinutes) {
       }, (sessionIdFromStream) => {
         // 收集提取的 session_id（可能更新）
         extractedSessionId = sessionIdFromStream;
-      }, true); // resume 模式
+      }, true, onMessage); // resume 模式，传递消息推送回调
     } else {
       // 非流式模式：直接收集输出，同时尝试提取 session_id
       child.stdout.on("data", (data) => {
@@ -1682,8 +1690,9 @@ function extractAssistantText(jsonObj) {
  * @param {Function} [onText] - 文本收集回调，接收提取的完整文本
  * @param {Function} [onSessionId] - session_id 收集回调，接收提取的 session_id
  * @param {boolean} [isResume] - 是否是 resume 模式
+ * @param {Function} [onMessage] - 消息推送回调，接收独立的消息内容和 session_id，用于推送到 TaskEcho
  */
-function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume = false) {
+function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume = false, onMessage = null) {
   logDetail("初始化流式输出过滤器");
 
   let printedAny = false;
@@ -1698,6 +1707,129 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
   let userPromptDisplayed = false; // 用户提示词是否已显示
   let knownUserPrompts = new Set(); // 记录已知的用户提示词，用于过滤 assistant 输出
   let agentLabelDisplayed = false; // Agent 标签是否已在当前输出块中显示
+  
+  // 用于检测消息边界的变量
+  let lastMessageEndTime = Date.now(); // 上次消息结束时间
+  let lastPushedContent = ""; // 上次推送的累积内容（用于跟踪推送位置）
+  let messagePushTimer = null; // 消息推送定时器（用于检测消息边界）
+  const MESSAGE_BOUNDARY_DELAY = 2000; // 消息边界检测延迟（毫秒），如果2秒内没有新内容，认为消息完成
+  
+  /**
+   * 检测消息边界并推送消息
+   * @param {string} currentContent - 当前累积的内容
+   * @param {boolean} forcePush - 是否强制推送（用于流式输出结束时）
+   */
+  const checkAndPushMessage = (currentContent, forcePush = false) => {
+    if (!onMessage || !currentContent || currentContent.trim().length === 0) {
+      return;
+    }
+    
+    const trimmedContent = currentContent.trim();
+    
+    // 如果内容与上次推送的内容相同，不推送
+    if (trimmedContent === lastPushedContent) {
+      return;
+    }
+    
+    // 清除之前的定时器
+    if (messagePushTimer) {
+      clearTimeout(messagePushTimer);
+      messagePushTimer = null;
+    }
+    
+    // 检测消息边界：检查是否有明显的段落分隔（双换行、句号+换行等）
+    // 使用更严格的边界检测：双换行、句号+换行、问号+换行、感叹号+换行
+    const paragraphBreakRegex = /(\n\s*\n|。\s*\n|\.\s*\n|！\s*\n|？\s*\n)/;
+    const hasParagraphBreak = paragraphBreakRegex.test(trimmedContent);
+    
+    // 检测句子结束标记（在行尾）
+    const hasSentenceEnd = /(。|！|？|\.\s|!\s|\?\s)$/.test(trimmedContent);
+    
+    // 计算从上次推送位置到当前的新增内容
+    let newContent = "";
+    if (trimmedContent.startsWith(lastPushedContent)) {
+      // 增量更新：提取新增部分
+      newContent = trimmedContent.substring(lastPushedContent.length);
+    } else if (lastPushedContent.length === 0) {
+      // 首次推送：使用完整内容
+      newContent = trimmedContent;
+    } else {
+      // 内容完全不一样（很少见）：使用完整内容
+      newContent = trimmedContent;
+    }
+    
+    // 如果检测到段落分隔，提取并推送所有完整的消息块
+    if (hasParagraphBreak && newContent.length > 0) {
+      // 找到所有段落分隔符的位置
+      const breakMatches = [];
+      let match;
+      
+      // 使用全局匹配找到所有段落分隔符
+      const globalRegex = /(\n\s*\n|。\s*\n|\.\s*\n|！\s*\n|？\s*\n)/g;
+      while ((match = globalRegex.exec(newContent)) !== null) {
+        breakMatches.push({
+          index: match.index,
+          length: match[0].length,
+          endIndex: match.index + match[0].length
+        });
+      }
+      
+      // 提取并推送所有完整的消息块
+      let lastEndIndex = 0;
+      for (const breakMatch of breakMatches) {
+        // 提取从上次结束位置到当前段落分隔符之前的内容（不包括分隔符本身）
+        const messageBlock = newContent.substring(lastEndIndex, breakMatch.index).trim();
+        if (messageBlock.length > 0) {
+          // 推送完整的消息块（不包含段落分隔符）
+          onMessage(messageBlock, sessionId);
+          // 更新结束位置为段落分隔符之后
+          lastEndIndex = breakMatch.endIndex;
+          lastMessageEndTime = Date.now();
+        } else {
+          // 如果消息块为空，仍然更新结束位置（跳过空块）
+          lastEndIndex = breakMatch.endIndex;
+        }
+      }
+      
+      // 更新上次推送的位置（包括已推送的消息块和段落分隔符）
+      if (lastEndIndex > 0) {
+        lastPushedContent = lastPushedContent + newContent.substring(0, lastEndIndex);
+      }
+    }
+    // 如果强制推送，或者检测到句子结束且新增内容足够长
+    else if (forcePush || (hasSentenceEnd && newContent.trim().length > 20)) {
+      // 推送新增的完整内容（作为一条消息）
+      const messageToPush = newContent.trim();
+      if (messageToPush.length > 0) {
+        onMessage(messageToPush, sessionId);
+        lastPushedContent = trimmedContent;
+        lastMessageEndTime = Date.now();
+      }
+    } else if (newContent.trim().length > 50) {
+      // 新增内容较长但没有明显边界，使用定时器延迟推送
+      messagePushTimer = setTimeout(() => {
+        // 重新获取当前内容（可能已经更新）
+        const currentTrimmed = lastAssistantOutput ? lastAssistantOutput.trim() : "";
+        if (currentTrimmed && currentTrimmed !== lastPushedContent) {
+          // 计算新增部分
+          let finalNewContent = "";
+          if (currentTrimmed.startsWith(lastPushedContent)) {
+            finalNewContent = currentTrimmed.substring(lastPushedContent.length).trim();
+          } else {
+            finalNewContent = currentTrimmed;
+          }
+          
+          // 如果新增内容足够长，推送
+          if (finalNewContent && finalNewContent.length > 0) {
+            onMessage(finalNewContent, sessionId);
+            lastPushedContent = currentTrimmed;
+            lastMessageEndTime = Date.now();
+          }
+        }
+        messagePushTimer = null;
+      }, MESSAGE_BOUNDARY_DELAY);
+    }
+  };
 
   // 直接监听 data 事件，因为流式数据可能不是完整的行
   stream.on("data", (chunk) => {
@@ -2018,6 +2150,9 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
                 // 如果最后一行没有换行符，暂不输出（等待更多内容或结束）
                 printedAny = true;
                 lastAssistantOutput = assistantText; // 更新记录的完整内容
+                
+                // 检测消息边界并推送
+                checkAndPushMessage(assistantText, false);
               }
             } else if (assistantText !== lastAssistantOutput) {
               // 内容完全不一样（这种情况很少），输出全部
@@ -2048,6 +2183,9 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
               printedAny = true;
               lastAssistantOutput = assistantText;
               currentSection = "assistant";
+              
+              // 检测消息边界并推送（内容完全不一样，可能是新消息）
+              checkAndPushMessage(assistantText, false);
             }
             // 如果 assistantText === lastAssistantOutput，说明内容没有变化，不输出
           }
@@ -2168,6 +2306,17 @@ function pipeThroughAssistantFilter(stream, onEnd, onText, onSessionId, isResume
     // 如果输出了任何内容，显示结束标记
     if (agentOutputStarted) {
       logAgentOutputEnd();
+    }
+
+    // 清除消息推送定时器
+    if (messagePushTimer) {
+      clearTimeout(messagePushTimer);
+      messagePushTimer = null;
+    }
+    
+    // 推送最后一条消息（如果还有未推送的内容）
+    if (lastAssistantOutput && lastAssistantOutput.trim().length > 0) {
+      checkAndPushMessage(lastAssistantOutput, true);
     }
 
     // 调用文本收集回调（如果提供）- 只传递 assistant 文本
@@ -2311,9 +2460,10 @@ async function main() {
  * @param {string} model - 模型名称
  * @param {string[]} positionalArgs - 透传参数
  * @param {number} timeoutMinutes - 超时时间（分钟）
+ * @param {Object|null} echoConfig - TaskEcho 配置（可选，包含 taskId, taskFile）
  * @returns {Promise<Object>} { exitCode, stdout, stderr, durationMs, sessionId }
  */
-function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
+function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes, echoConfig = null) {
   return new Promise((resolve, reject) => {
     const startTime = Date.now();
     const helpText = ensureCursorAgentInstalled();
@@ -2408,6 +2558,13 @@ function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
   }
 
   if (streamPartial) {
+      // 创建消息推送回调
+      const onMessage = echoConfig && taskecho.isEnabled()
+        ? async (message, msgSessionId) => {
+            await pushMessageToTaskEcho(echoConfig, message, msgSessionId || extractedSessionId, true);
+          }
+        : null;
+      
       // 流式模式：使用 pipeThroughAssistantFilter 提取文本并显示
       // 同时收集提取后的文本和 session_id 用于语义判定
     pipeThroughAssistantFilter(child.stdout, () => {
@@ -2418,7 +2575,7 @@ function runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes) {
     }, (sessionIdFromStream) => {
         // 收集提取的 session_id
         extractedSessionId = sessionIdFromStream;
-    }, false); // 首次执行，不是 resume
+    }, false, onMessage); // 首次执行，不是 resume，传递消息推送回调
   } else {
     child.stdout.on("data", (d) => {
         const text = d.toString();
@@ -2547,6 +2704,74 @@ async function pushLogToTaskEcho(echoConfig, content, silent = true) {
 }
 
 /**
+ * 推送消息到 TaskEcho（带错误处理）
+ * @param {Object|null} echoConfig - TaskEcho 配置（可选，包含 taskId, taskFile）
+ * @param {string} message - 消息内容
+ * @param {string|null} sessionId - session_id（可选）
+ * @param {boolean} silent - 是否静默处理错误（默认: true）
+ */
+async function pushMessageToTaskEcho(echoConfig, message, sessionId = null, silent = true) {
+  if (!echoConfig || !taskecho.isEnabled()) {
+    return;
+  }
+  
+  try {
+    const { taskId, taskFile } = echoConfig;
+    if (!taskId || !taskFile) {
+      return;
+    }
+    
+    // 清理消息内容（移除 JSON 等）
+    let cleanMessage = message.trim();
+    if (cleanMessage) {
+      const jsonMatch = cleanMessage.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const jsonIndex = cleanMessage.indexOf(jsonMatch[0]);
+        if (jsonIndex > 0) {
+          // JSON 之前的内容
+          cleanMessage = cleanMessage.substring(0, jsonIndex).trim();
+        } else if (jsonIndex === 0) {
+          // JSON 在开头，尝试提取 JSON 之后的内容
+          const afterJson = cleanMessage.substring(jsonMatch[0].length).trim();
+          if (afterJson) {
+            cleanMessage = afterJson;
+          } else {
+            // 如果 JSON 之后没有内容，跳过推送
+            cleanMessage = "";
+          }
+        }
+      }
+    }
+    
+    // 如果消息为空或太短，跳过推送
+    if (!cleanMessage || cleanMessage.length < 3) {
+      return;
+    }
+    
+    const projectInfo = await taskecho.getProjectInfo();
+    const queueInfo = taskecho.getQueueInfo(taskFile, { prompts: [] });
+    
+    await taskecho.addMessage(
+      projectInfo.project_id,
+      queueInfo.queue_id,
+      taskId,
+      "assistant",
+      cleanMessage,
+      sessionId
+    );
+    
+    if (!silent) {
+      logDetail(`消息已推送到 TaskEcho (${cleanMessage.length} 字符)${sessionId ? `, session_id: ${sessionId}` : ""}`);
+    }
+  } catch (err) {
+    if (!silent) {
+      logDetail(`TaskEcho 消息推送失败: ${err.message}`);
+    }
+    // 静默处理错误，不影响主流程
+  }
+}
+
+/**
  * 执行任务循环（首次执行 -> 判定 -> resume -> ...）
  * @param {string} prompt - 初始提示词
  * @param {string} model - 模型名称
@@ -2592,7 +2817,7 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
         // 首次执行：使用 cursor-agent（非 resume）
         logSubStep("调用 cursor-agent (首次执行)");
         logDetail(`模型: ${model}`);
-        result = await runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes);
+        result = await runCursorAgentInitial(prompt, model, positionalArgs, timeoutMinutes, echoConfig);
         // 保存首次执行获取的 session_id
         if (result.sessionId) {
           sessionId = result.sessionId;
@@ -2615,7 +2840,7 @@ async function executeTaskWithRetry(prompt, model, judgeModel, retry, timeoutMin
         logSubStep("调用 cursor-agent resume");
         logDetail(`session_id: ${sessionId}`);
         logDetail(`提示词: "${resumePrompt}"`);
-        result = await runCursorAgentResume(model, sessionId, resumePrompt, timeoutMinutes);
+        result = await runCursorAgentResume(model, sessionId, resumePrompt, timeoutMinutes, echoConfig);
         
         // 更新 session_id（可能更新）
         if (result.sessionId && result.sessionId !== sessionId) {
